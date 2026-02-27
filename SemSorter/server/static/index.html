@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>SemSorter — AI Hazard Sorting System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+/* ── Design tokens ── */
+:root{
+  --bg:#0a0d14;--surface:#111827;--surface2:#1a2235;--border:#1e2d45;
+  --accent:#3b82f6;--accent-glow:rgba(59,130,246,.35);
+  --success:#22c55e;--warning:#f59e0b;--danger:#ef4444;--chemical:#a78bfa;
+  --text:#e2e8f0;--text-muted:#64748b;--text-dim:#94a3b8;
+  --radius:12px;--radius-sm:8px;
+  --font:'Inter',system-ui,sans-serif;--mono:'JetBrains Mono',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:100vh;
+     display:grid;grid-template-rows:auto 1fr;overflow:hidden;height:100vh}
+
+/* ── Header ── */
+header{display:flex;align-items:center;justify-content:space-between;
+       padding:14px 24px;background:var(--surface);border-bottom:1px solid var(--border);
+       backdrop-filter:blur(8px);}
+.logo{display:flex;align-items:center;gap:10px}
+.logo-icon{width:36px;height:36px;background:linear-gradient(135deg,var(--accent),#8b5cf6);
+           border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.logo-text{font-weight:700;font-size:18px;letter-spacing:-.3px}
+.logo-sub{font-size:11px;color:var(--text-muted);font-weight:400;margin-top:1px}
+.header-status{display:flex;align-items:center;gap:8px;font-size:13px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--success);
+     box-shadow:0 0 8px var(--success);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+/* ── Layout ── */
+main{display:grid;grid-template-columns:1fr 380px;gap:0;overflow:hidden}
+
+/* ── Left: Simulation panel ── */
+.sim-panel{display:flex;flex-direction:column;padding:20px;gap:16px;overflow:hidden}
+.sim-header{display:flex;align-items:center;justify-content:space-between}
+.panel-title{font-size:13px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px}
+.sim-container{flex:1;background:var(--surface);border:1px solid var(--border);
+               border-radius:var(--radius);overflow:hidden;position:relative;
+               display:flex;align-items:center;justify-content:center;min-height:300px}
+#sim-video{width:100%;height:100%;object-fit:contain;display:block}
+.sim-overlay{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;
+             align-items:center;justify-content:center;background:rgba(10,13,20,.85);
+             flex-direction:column;gap:12px;transition:.3s}
+.sim-overlay.hidden{opacity:0;pointer-events:none}
+.spinner{width:40px;height:40px;border:3px solid var(--border);
+         border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.sim-overlay p{color:var(--text-muted);font-size:14px}
+
+/* ── Status cards ── */
+.stats-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);
+           padding:12px 16px}
+.stat-label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px}
+.stat-value{font-size:22px;font-weight:700;font-family:var(--mono)}
+.stat-value.ok{color:var(--success)}
+.stat-value.busy{color:var(--warning)}
+
+/* ── Right: Agent panel ── */
+.agent-panel{background:var(--surface);border-left:1px solid var(--border);
+             display:flex;flex-direction:column;overflow:hidden}
+.agent-header{padding:16px 20px;border-bottom:1px solid var(--border);
+              display:flex;align-items:center;justify-content:space-between}
+.agent-title{font-weight:600;font-size:15px}
+.sdk-badge{background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.3);
+           color:var(--accent);font-size:10px;font-weight:600;padding:2px 8px;
+           border-radius:20px;letter-spacing:.5px}
+
+/* ── Transcript ── */
+.transcript{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;
+            scroll-behavior:smooth}
+.transcript::-webkit-scrollbar{width:4px}
+.transcript::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.msg{display:flex;flex-direction:column;gap:3px;animation:fadeIn .25s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.msg-role{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted)}
+.msg-text{font-size:14px;line-height:1.55;padding:10px 13px;border-radius:10px;
+          background:var(--surface2);border:1px solid var(--border);max-width:100%}
+.msg.user .msg-role{color:var(--accent)}
+.msg.user .msg-text{background:rgba(59,130,246,.08);border-color:rgba(59,130,246,.2)}
+.msg.agent .msg-role{color:var(--success)}
+.msg.agent .msg-text{background:rgba(34,197,94,.06);border-color:rgba(34,197,94,.15)}
+.msg.system .msg-role{color:var(--text-muted)}
+.msg.system .msg-text{font-family:var(--mono);font-size:12px;background:var(--surface);
+                       border-style:dashed;white-space:pre-wrap}
+.msg.warning .msg-role{color:var(--warning)}
+.msg.warning .msg-text{background:rgba(245,158,11,.08);border-color:rgba(245,158,11,.3)}
+
+/* ── Quota warning banner ── */
+#quota-banner{display:none;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.35);
+              border-radius:var(--radius-sm);margin:0 16px;padding:10px 14px;
+              font-size:12px;color:var(--warning);line-height:1.5}
+#quota-banner.show{display:block}
+
+/* ── Input area ── */
+.input-area{padding:14px 16px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:10px}
+.input-row{display:flex;gap:8px}
+#cmd-input{flex:1;background:var(--surface2);border:1px solid var(--border);
+           border-radius:var(--radius-sm);padding:10px 14px;color:var(--text);
+           font-family:var(--font);font-size:14px;outline:none;transition:.2s}
+#cmd-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-glow)}
+#cmd-input::placeholder{color:var(--text-muted)}
+.btn{border:none;cursor:pointer;border-radius:var(--radius-sm);font-family:var(--font);
+     font-weight:600;font-size:13px;transition:.18s;display:flex;align-items:center;gap:6px;
+     white-space:nowrap}
+.btn:active{transform:scale(.96)}
+.btn-primary{background:var(--accent);color:#fff;padding:10px 18px}
+.btn-primary:hover{background:#2563eb}
+.btn-voice{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:10px 14px;font-size:16px}
+.btn-voice.listening{background:rgba(239,68,68,.15);border-color:var(--danger);color:var(--danger);animation:pulse 1s infinite}
+.btn-voice:hover{border-color:var(--accent)}
+.action-btns{display:flex;gap:8px}
+.btn-action{flex:1;padding:9px 12px;font-size:12px}
+.btn-scan{background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.3);color:var(--accent)}
+.btn-scan:hover{background:rgba(59,130,246,.22)}
+.btn-sort{background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);color:var(--success)}
+.btn-sort:hover{background:rgba(34,197,94,.2)}
+.btn-state{background:rgba(167,139,250,.1);border:1px solid rgba(167,139,250,.3);color:var(--chemical)}
+.btn-state:hover{background:rgba(167,139,250,.2)}
+.stt-hint{font-size:11px;color:var(--text-muted);text-align:center}
+
+/* ── Item list ── */
+.items-section{padding:0 16px 10px;border-top:1px solid var(--border);padding-top:10px}
+.items-title{font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;
+             letter-spacing:.6px;margin-bottom:8px}
+.item-list{display:flex;flex-direction:column;gap:5px;max-height:110px;overflow-y:auto}
+.item-pill{display:flex;align-items:center;justify-content:space-between;
+           padding:5px 10px;border-radius:6px;font-size:12px;
+           background:var(--surface2);border:1px solid var(--border)}
+.item-pill .name{font-family:var(--mono);color:var(--text-dim)}
+.item-pill .badge{font-size:10px;font-weight:600;padding:2px 7px;border-radius:20px}
+.badge.flammable{background:rgba(239,68,68,.15);color:#f87171;border:1px solid rgba(239,68,68,.25)}
+.badge.chemical{background:rgba(167,139,250,.15);color:#c4b5fd;border:1px solid rgba(167,139,250,.25)}
+.badge.safe{background:rgba(100,116,139,.15);color:#94a3b8;border:1px solid rgba(100,116,139,.25)}
+.badge.sorted{background:rgba(34,197,94,.1);color:#4ade80;border:1px solid rgba(34,197,94,.2)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">🤖</div>
+    <div>
+      <div class="logo-text">SemSorter</div>
+      <div class="logo-sub">AI Hazard Sorting — Vision-Agents SDK</div>
+    </div>
+  </div>
+  <div class="header-status">
+    <div class="dot" id="conn-dot"></div>
+    <span id="conn-label">Connecting…</span>
+  </div>
+</header>
+
+<main>
+  <!-- Left: simulation video -->
+  <div class="sim-panel">
+    <div class="sim-header">
+      <span class="panel-title">Live Simulation Feed</span>
+      <span style="font-size:12px;color:var(--text-muted)" id="fps-label">— fps</span>
+    </div>
+
+    <div class="sim-container">
+      <img id="sim-video" alt="MuJoCo simulation" src=""/>
+      <div class="sim-overlay" id="sim-overlay">
+        <div class="spinner"></div>
+        <p>Warming up simulation…</p>
+      </div>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Items Sorted</div>
+        <div class="stat-value ok" id="stat-sorted">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Arm Status</div>
+        <div class="stat-value ok" id="stat-arm">Idle</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Sim Time</div>
+        <div class="stat-value" id="stat-time" style="font-size:18px">0.0 s</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: agent chat panel -->
+  <div class="agent-panel">
+    <div class="agent-header">
+      <div class="agent-title">SemSorter AI</div>
+      <div class="sdk-badge">Vision-Agents SDK</div>
+    </div>
+
+    <div id="quota-banner"></div>
+
+    <div class="transcript" id="transcript"></div>
+
+    <div class="items-section">
+      <div class="items-title">Conveyor Items</div>
+      <div class="item-list" id="item-list"><span style="font-size:12px;color:var(--text-muted)">Loading…</span></div>
+    </div>
+
+    <div class="input-area">
+      <div class="action-btns">
+        <button class="btn btn-action btn-scan" onclick="sendWs('scan')">🔍 Scan</button>
+        <button class="btn btn-action btn-sort" onclick="sendWs('sort')">⚡ Sort All</button>
+        <button class="btn btn-action btn-state" onclick="sendWs('state')">📊 State</button>
+      </div>
+
+      <div class="input-row">
+        <input id="cmd-input" placeholder="Type a command…" autocomplete="off"
+               onkeydown="if(event.key==='Enter')sendCommand()"/>
+        <button class="btn btn-voice" id="voice-btn" onclick="toggleVoice()" title="Voice input">🎤</button>
+        <button class="btn btn-primary" onclick="sendCommand()">Send</button>
+      </div>
+      <div class="stt-hint" id="stt-hint">Using browser speech recognition</div>
+    </div>
+  </div>
+</main>
+
+<script>
+// ─── WebSocket connections ────────────────────────────────────────────────────
+const WS_BASE = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+let chatWs = null;
+let videoWs = null;
+let reconnectDelay = 1000;
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let frameCount = 0, lastFpsTime = Date.now();
+let listening = false;
+let recognition = null;
+
+// ─── Chat WebSocket ───────────────────────────────────────────────────────────
+function connectChat() {
+  chatWs = new WebSocket(`${WS_BASE}/ws/chat`);
+  chatWs.onopen = () => {
+    setConnected(true);
+    reconnectDelay = 1000;
+    pollState();
+  };
+  chatWs.onmessage = ({data}) => handleChatMessage(JSON.parse(data));
+  chatWs.onclose = () => {
+    setConnected(false);
+    setTimeout(connectChat, reconnectDelay = Math.min(reconnectDelay * 1.5, 10000));
+  };
+  chatWs.onerror = () => chatWs.close();
+}
+
+function handleChatMessage(msg) {
+  switch(msg.type) {
+    case 'welcome':       addMsg('agent', 'SemSorter AI', msg.text); break;
+    case 'user_message':  addMsg('user',  'You',          msg.text); break;
+    case 'agent_response': addMsg('agent','SemSorter AI', msg.text); break;
+    case 'scan_result':   renderScanResult(msg.data); break;
+    case 'sort_result':   renderSortResult(msg.data); break;
+    case 'state':         renderState(msg.data); break;
+    case 'quota_warning': showQuotaWarning(msg.service, msg.message); break;
+    case 'system':        addMsg('system', 'System', msg.text); break;
+  }
+}
+
+function sendWs(type, extra={}) {
+  if (!chatWs || chatWs.readyState !== 1) return;
+  chatWs.send(JSON.stringify({type, ...extra}));
+}
+
+function sendCommand() {
+  const input = document.getElementById('cmd-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  sendWs('command', {text});
+}
+
+// ─── Video WebSocket ──────────────────────────────────────────────────────────
+function connectVideo() {
+  videoWs = new WebSocket(`${WS_BASE}/ws/video`);
+  videoWs.onmessage = ({data}) => {
+    const {type, data: b64} = JSON.parse(data);
+    if (type === 'frame') {
+      const img = document.getElementById('sim-video');
+      img.src = `data:image/jpeg;base64,${b64}`;
+      document.getElementById('sim-overlay').classList.add('hidden');
+      frameCount++;
+    }
+  };
+  videoWs.onclose = () => setTimeout(connectVideo, 2000);
+  videoWs.onerror = () => videoWs.close();
+}
+
+// FPS counter
+setInterval(() => {
+  const now = Date.now();
+  const fps = Math.round(frameCount / ((now - lastFpsTime) / 1000));
+  document.getElementById('fps-label').textContent = `${fps} fps`;
+  frameCount = 0; lastFpsTime = now;
+}, 2000);
+
+// ─── State polling ────────────────────────────────────────────────────────────
+function pollState() {
+  fetch('/api/state').then(r => r.json()).then(renderState).catch(()=>{});
+  setTimeout(pollState, 3000);
+}
+
+function renderState(s) {
+  document.getElementById('stat-sorted').textContent = s.items_sorted ?? 0;
+  const armEl = document.getElementById('stat-arm');
+  armEl.textContent = s.arm_busy ? 'Busy' : 'Idle';
+  armEl.className = `stat-value ${s.arm_busy ? 'busy' : 'ok'}`;
+  document.getElementById('stat-time').textContent = `${s.time ?? 0} s`;
+  if (s.items) renderItems(s.items);
+  if (s.quota_exceeded) Object.entries(s.quota_exceeded).forEach(([svc, exceeded]) => {
+    if (exceeded) showQuotaWarning(svc, `⚠️ ${svc} quota exceeded — demo mode active`);
+  });
+}
+
+function renderItems(items) {
+  const list = document.getElementById('item-list');
+  list.innerHTML = items.map(i => {
+    const type = i.hazard_type || 'safe';
+    const cls = i.picked ? 'sorted' : type.toLowerCase();
+    const label = i.picked ? '✓ sorted' : type;
+    return `<div class="item-pill">
+      <span class="name">${i.name}</span>
+      <span class="badge ${cls}">${label}</span>
+    </div>`;
+  }).join('');
+}
+
+// ─── Scan / sort renderers ────────────────────────────────────────────────────
+function renderScanResult(d) {
+  const demoNote = d.demo_mode ? ' [demo mode]' : '';
+  const lines = [`Found ${d.hazards_found} hazardous item(s)${demoNote}:`];
+  (d.items||[]).forEach(i =>
+    lines.push(`  • ${i.item_name} (${i.type}) → ${i.bin_type} bin`));
+  addMsg('system', 'Scan Result', lines.join('\n'));
+}
+
+function renderSortResult(d) {
+  const demoNote = d.demo_mode ? ' [demo mode]' : '';
+  const lines = [
+    `Sorted ${d.items_sorted}/${d.items_matched} item(s)${demoNote}:`,
+    ...(d.details||[]).map(x => `  ${x.success ? '✅' : '❌'} ${x.item} → ${x.bin}`)
+  ];
+  addMsg('system', 'Sort Result', lines.join('\n'));
+}
+
+// ─── Quota warning ────────────────────────────────────────────────────────────
+const _shownWarnings = new Set();
+function showQuotaWarning(service, message) {
+  if (_shownWarnings.has(service)) return;
+  _shownWarnings.add(service);
+  const banner = document.getElementById('quota-banner');
+  banner.textContent = message;
+  banner.classList.add('show');
+  addMsg('warning', 'API Status', message);
+}
+
+// ─── Transcript helpers ───────────────────────────────────────────────────────
+function addMsg(cls, role, text) {
+  const t = document.getElementById('transcript');
+  const div = document.createElement('div');
+  div.className = `msg ${cls}`;
+  div.innerHTML = `<div class="msg-role">${role}</div><div class="msg-text">${escHtml(text)}</div>`;
+  t.appendChild(div);
+  t.scrollTop = t.scrollHeight;
+}
+function escHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>'); }
+
+// ─── Connection status ────────────────────────────────────────────────────────
+function setConnected(ok) {
+  const dot = document.getElementById('conn-dot');
+  const lbl = document.getElementById('conn-label');
+  dot.style.background = ok ? 'var(--success)' : 'var(--danger)';
+  dot.style.boxShadow = ok ? '0 0 8px var(--success)' : '0 0 8px var(--danger)';
+  dot.style.animation = ok ? 'pulse 2s infinite' : 'none';
+  lbl.textContent = ok ? 'Connected' : 'Reconnecting…';
+}
+
+// ─── Voice input (Web Speech API) ────────────────────────────────────────────
+function toggleVoice() {
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRec) {
+    addMsg('system','System','Browser speech recognition not supported. Use the text input.');
+    return;
+  }
+  if (listening) { recognition.stop(); return; }
+
+  recognition = new SpeechRec();
+  recognition.lang = 'en-US';
+  recognition.interimResults = false;
+  recognition.onresult = e => {
+    const text = e.results[0][0].transcript;
+    document.getElementById('cmd-input').value = text;
+    document.getElementById('stt-hint').textContent =
+      `Heard: "${text}" — sending…`;
+    sendCommand();
+  };
+  recognition.onend = () => {
+    listening = false;
+    document.getElementById('voice-btn').classList.remove('listening');
+    document.getElementById('stt-hint').textContent = 'Using browser speech recognition';
+  };
+  recognition.onerror = e => {
+    addMsg('system','STT',`Speech recognition error: ${e.error}`);
+    listening = false;
+    document.getElementById('voice-btn').classList.remove('listening');
+  };
+  recognition.start();
+  listening = true;
+  document.getElementById('voice-btn').classList.add('listening');
+  document.getElementById('stt-hint').textContent = '🎙️ Listening… speak now';
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+setConnected(false);
+connectChat();
+connectVideo();
+</script>
+</body>
+</html>

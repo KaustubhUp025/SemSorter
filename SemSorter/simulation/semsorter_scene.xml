@@ -1,0 +1,194 @@
+<mujoco model="semsorter">
+  <!-- Let panda.xml handle its own meshdir via its embedded compiler element -->
+  <compiler angle="radian" autolimits="true"/>
+
+  <option integrator="implicitfast" gravity="0 0 -9.81" timestep="0.002"/>
+
+  <!-- ============================================================ -->
+  <!-- Include the Franka Panda arm (with integrated gripper)        -->
+  <!-- ============================================================ -->
+  <include file="../../mujoco_menagerie/franka_emika_panda/panda.xml"/>
+
+  <statistic center="0 0 0.5" extent="1.5"/>
+
+  <!-- ============================================================ -->
+  <!-- Visual settings                                               -->
+  <!-- ============================================================ -->
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="150" elevation="-25"/>
+  </visual>
+
+  <!-- ============================================================ -->
+  <!-- Textures & Materials                                          -->
+  <!-- ============================================================ -->
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+      rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+
+    <!-- Conveyor belt material -->
+    <texture type="2d" name="belt_tex" builtin="checker" rgb1="0.15 0.15 0.15" rgb2="0.2 0.2 0.2"
+      width="100" height="100"/>
+    <material name="belt_mat" texture="belt_tex" texrepeat="10 2" specular="0.1" shininess="0.05"/>
+
+    <!-- Conveyor frame material -->
+    <material name="frame_mat" rgba="0.4 0.4 0.45 1" specular="0.3" shininess="0.2"/>
+
+    <!-- Bin materials -->
+    <material name="bin_flammable_mat" rgba="0.85 0.15 0.1 0.9" specular="0.2" shininess="0.1"/>
+    <material name="bin_chemical_mat" rgba="0.95 0.75 0.1 0.9" specular="0.2" shininess="0.1"/>
+    <material name="bin_inner_mat" rgba="0.1 0.1 0.1 1"/>
+
+    <!-- Hazardous item materials -->
+    <material name="hazard_red" rgba="0.9 0.1 0.1 1" specular="0.4" shininess="0.3"/>
+    <material name="hazard_green" rgba="0.1 0.8 0.2 1" specular="0.4" shininess="0.3"/>
+    <material name="hazard_blue" rgba="0.1 0.2 0.9 1" specular="0.4" shininess="0.3"/>
+    <material name="hazard_yellow" rgba="0.95 0.85 0.1 1" specular="0.4" shininess="0.3"/>
+    <material name="safe_gray" rgba="0.6 0.6 0.6 1" specular="0.3" shininess="0.2"/>
+    <material name="safe_white" rgba="0.9 0.9 0.9 1" specular="0.3" shininess="0.2"/>
+  </asset>
+
+  <!-- ============================================================ -->
+  <!-- World: floor, lights, conveyors, bins, items                  -->
+  <!-- ============================================================ -->
+  <worldbody>
+    <!-- Lighting -->
+    <light pos="0 0 3" dir="0 0 -1" directional="true" diffuse="0.5 0.5 0.5"/>
+    <light pos="1 -1 2" dir="-0.3 0.3 -0.8" diffuse="0.3 0.3 0.3"/>
+    <light pos="-1 -1 2" dir="0.3 0.3 -0.8" diffuse="0.3 0.3 0.3"/>
+
+    <!-- Ground plane -->
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- ======================================================== -->
+    <!-- CONVEYOR A (Input) — items arrive here from the left      -->
+    <!-- ======================================================== -->
+    <body name="conveyor_input" pos="-0.55 0 0">
+      <!-- Belt surface -->
+      <geom name="belt_input" type="box" size="0.35 0.12 0.005" pos="0 0 0.35"
+        material="belt_mat" friction="0.8 0.005 0.0001"/>
+      <!-- Side rails -->
+      <geom name="rail_input_L" type="box" size="0.35 0.005 0.02" pos="0 0.125 0.37"
+        material="frame_mat"/>
+      <geom name="rail_input_R" type="box" size="0.35 0.005 0.02" pos="0 -0.125 0.37"
+        material="frame_mat"/>
+      <!-- Legs -->
+      <geom type="cylinder" size="0.015 0.175" pos="-0.3 0.1 0.175" material="frame_mat"/>
+      <geom type="cylinder" size="0.015 0.175" pos="-0.3 -0.1 0.175" material="frame_mat"/>
+      <geom type="cylinder" size="0.015 0.175" pos="0.3 0.1 0.175" material="frame_mat"/>
+      <geom type="cylinder" size="0.015 0.175" pos="0.3 -0.1 0.175" material="frame_mat"/>
+    </body>
+
+    <!-- ======================================================== -->
+    <!-- CONVEYOR B (Output) — clean items continue here (right)   -->
+    <!-- ======================================================== -->
+    <body name="conveyor_output" pos="0.55 0 0">
+      <!-- Belt surface -->
+      <geom name="belt_output" type="box" size="0.35 0.12 0.005" pos="0 0 0.35"
+        material="belt_mat" friction="0.8 0.005 0.0001"/>
+      <!-- Side rails -->
+      <geom name="rail_output_L" type="box" size="0.35 0.005 0.02" pos="0 0.125 0.37"
+        material="frame_mat"/>
+      <geom name="rail_output_R" type="box" size="0.35 0.005 0.02" pos="0 -0.125 0.37"
+        material="frame_mat"/>
+      <!-- Legs -->
+      <geom type="cylinder" size="0.015 0.175" pos="-0.3 0.1 0.175" material="frame_mat"/>
+      <geom type="cylinder" size="0.015 0.175" pos="-0.3 -0.1 0.175" material="frame_mat"/>
+      <geom type="cylinder" size="0.015 0.175" pos="0.3 0.1 0.175" material="frame_mat"/>
+      <geom type="cylinder" size="0.015 0.175" pos="0.3 -0.1 0.175" material="frame_mat"/>
+    </body>
+
+    <!-- ======================================================== -->
+    <!-- FLAMMABLE WASTE BIN (Red) — front-left of the arm         -->
+    <!-- ======================================================== -->
+    <body name="bin_flammable" pos="-0.25 0.45 0">
+      <!-- Bin walls (open top box) -->
+      <geom name="bin_fl_back"  type="box" size="0.1 0.005 0.12" pos="0 -0.095 0.12" material="bin_flammable_mat"/>
+      <geom name="bin_fl_front" type="box" size="0.1 0.005 0.12" pos="0 0.095 0.12" material="bin_flammable_mat"/>
+      <geom name="bin_fl_left"  type="box" size="0.005 0.1 0.12" pos="-0.095 0 0.12" material="bin_flammable_mat"/>
+      <geom name="bin_fl_right" type="box" size="0.005 0.1 0.12" pos="0.095 0 0.12" material="bin_flammable_mat"/>
+      <geom name="bin_fl_bottom" type="box" size="0.1 0.1 0.005" pos="0 0 0.005" material="bin_inner_mat"/>
+      <!-- Label area (slightly raised red panel on front) -->
+      <site name="bin_flammable_label" pos="0 0.1 0.18" size="0.06 0.005 0.03" type="box" rgba="1 0 0 1"/>
+    </body>
+
+    <!-- ======================================================== -->
+    <!-- CHEMICAL WASTE BIN (Yellow) — front-right of the arm      -->
+    <!-- ======================================================== -->
+    <body name="bin_chemical" pos="0.25 0.45 0">
+      <!-- Bin walls (open top box) -->
+      <geom name="bin_ch_back"  type="box" size="0.1 0.005 0.12" pos="0 -0.095 0.12" material="bin_chemical_mat"/>
+      <geom name="bin_ch_front" type="box" size="0.1 0.005 0.12" pos="0 0.095 0.12" material="bin_chemical_mat"/>
+      <geom name="bin_ch_left"  type="box" size="0.005 0.1 0.12" pos="-0.095 0 0.12" material="bin_chemical_mat"/>
+      <geom name="bin_ch_right" type="box" size="0.005 0.1 0.12" pos="0.095 0 0.12" material="bin_chemical_mat"/>
+      <geom name="bin_ch_bottom" type="box" size="0.1 0.1 0.005" pos="0 0 0.005" material="bin_inner_mat"/>
+      <!-- Label area -->
+      <site name="bin_chemical_label" pos="0 0.1 0.18" size="0.06 0.005 0.03" type="box" rgba="1 0.8 0 1"/>
+    </body>
+
+    <!-- ======================================================== -->
+    <!-- HAZARDOUS ITEMS (on input conveyor, with free joints)      -->
+    <!-- ======================================================== -->
+
+    <!-- Item 1: Red cylinder (flammable chemical) — leftmost -->
+    <body name="item_flammable_1" pos="-0.82 0 0.39">
+      <freejoint name="item_flammable_1_jnt"/>
+      <geom name="item_flammable_1_geom" type="cylinder" size="0.02 0.025"
+        material="hazard_red" mass="0.05" friction="1 0.005 0.0001" priority="1"/>
+    </body>
+
+    <!-- Item 2: Safe white cylinder (goes to output conveyor) -->
+    <body name="item_safe_2" pos="-0.70 0 0.39">
+      <freejoint name="item_safe_2_jnt"/>
+      <geom name="item_safe_2_geom" type="cylinder" size="0.018 0.02"
+        material="safe_white" mass="0.04" friction="1 0.005 0.0001" priority="1"/>
+    </body>
+
+    <!-- Item 3: Yellow box (chemical waste) -->
+    <body name="item_chemical_1" pos="-0.58 0 0.385">
+      <freejoint name="item_chemical_1_jnt"/>
+      <geom name="item_chemical_1_geom" type="box" size="0.02 0.02 0.02"
+        material="hazard_yellow" mass="0.04" friction="1 0.005 0.0001" priority="1"/>
+    </body>
+
+    <!-- Item 4: Safe gray box (goes to output conveyor) -->
+    <body name="item_safe_1" pos="-0.46 0 0.385">
+      <freejoint name="item_safe_1_jnt"/>
+      <geom name="item_safe_1_geom" type="box" size="0.025 0.02 0.015"
+        material="safe_gray" mass="0.05" friction="1 0.005 0.0001" priority="1"/>
+    </body>
+
+    <!-- Item 5: Blue box (chemical waste) -->
+    <body name="item_chemical_2" pos="-0.34 0 0.385">
+      <freejoint name="item_chemical_2_jnt"/>
+      <geom name="item_chemical_2_geom" type="box" size="0.018 0.018 0.018"
+        material="hazard_blue" mass="0.03" friction="1 0.005 0.0001" priority="1"/>
+    </body>
+
+    <!-- Item 6: Green box (flammable) — rightmost -->
+    <body name="item_flammable_2" pos="-0.22 0 0.385">
+      <freejoint name="item_flammable_2_jnt"/>
+      <geom name="item_flammable_2_geom" type="box" size="0.018 0.018 0.018"
+        material="hazard_green" mass="0.035" friction="1 0.005 0.0001" priority="1"/>
+    </body>
+
+    <!-- ======================================================== -->
+    <!-- Camera for the overview shot (used by OBS or renderer)    -->
+    <!-- ======================================================== -->
+    <camera name="overview" pos="0 -1.2 1.2" xyaxes="1 0 0 0 0.7 0.7" fovy="50"/>
+    <camera name="topdown" pos="0 0 2.0" xyaxes="1 0 0 0 1 0" fovy="60"/>
+    <camera name="side" pos="1.5 0 0.8" xyaxes="0 1 0 -0.5 0 0.87" fovy="45"/>
+
+  </worldbody>
+
+  <!-- ============================================================ -->
+  <!-- Sensors for end-effector position tracking                    -->
+  <!-- ============================================================ -->
+  <sensor>
+    <framepos name="end_effector_pos" objtype="body" objname="hand"/>
+  </sensor>
+
+</mujoco>

@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: semsorter
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: MUJOCO_GL
+        value: egl
+      - key: GOOGLE_API_KEY
+        sync: false       # Set in Render dashboard — not committed to git
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: STREAM_API_KEY
+        sync: false
+      - key: STREAM_API_SECRET
+        sync: false
+    healthCheckPath: /api/state
+    autoDeploy: true

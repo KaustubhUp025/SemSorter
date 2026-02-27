@@ -1,0 +1,18 @@
+# SemSorter Web Server Dependencies
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+websockets==13.1
+python-multipart==0.0.12
+httpx==0.27.2
+pillow==10.4.0
+numpy==1.26.4
+
+# MuJoCo (headless, EGL)
+mujoco==3.2.0
+
+# Google Gemini (legacy + new SDK — both used for compatibility)
+google-generativeai==0.8.3
+google-genai==1.0.0
+
+# dotenv for loading .env files
+python-dotenv==1.0.1

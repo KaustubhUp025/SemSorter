@@ -1,0 +1,34 @@
+# Debug / generated images
+*.png
+!SemSorter/vision/vision_debug.png
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.eggs/
+*.egg-info/
+
+# MuJoCo
+*.mjb
+mujoco-*/
+mujoco_menagerie/
+
+# Vision-Agents SDK venv (too large for git)
+Vision-Agents/.venv/
+Vision-Agents/__pycache__/
+
+# uv cache
+.uv/
+uv.lock
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment (never commit secrets)
+.env
