@@ -3,6 +3,7 @@
 > **Real-time robotic arm simulation controlled by a multimodal AI agent using the [Vision-Agents SDK](https://github.com/GetStream/vision-agents) by GetStream.**
 
 [![Demo](https://img.shields.io/badge/Live%20Demo-Render.com-4f46e5)](https://semsorter.onrender.com)
+[![GitHub](https://img.shields.io/badge/GitHub-KaustubhUp025-181717?logo=github)](https://github.com/KaustubhUp025/SemSorter)
 
 ---
 
@@ -48,7 +49,7 @@ Browser  ←─── WebSocket ───→  FastAPI Server
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/SemSorter.git
+git clone https://github.com/KaustubhUp025/SemSorter.git
 cd SemSorter
 
 # Install dependencies
