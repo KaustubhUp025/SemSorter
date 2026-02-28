@@ -17,5 +17,5 @@ services:
         sync: false
       - key: STREAM_API_SECRET
         sync: false
-    healthCheckPath: /api/state
+    healthCheckPath: /health
     autoDeploy: true

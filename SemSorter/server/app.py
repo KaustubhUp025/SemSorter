@@ -24,12 +24,11 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Set
+from typing import Optional, Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-import numpy as np
 from PIL import Image
 
 # ── Local imports ─────────────────────────────────────────────────────────────
@@ -48,10 +47,12 @@ _STATIC.mkdir(exist_ok=True)
 # ── Connected WebSocket clients ───────────────────────────────────────────────
 _chat_clients: Set[WebSocket] = set()
 _video_clients: Set[WebSocket] = set()
+_main_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 async def _broadcast_chat(event: dict) -> None:
     """Push a JSON event to all connected chat WebSocket clients."""
+    global _chat_clients
     payload = json.dumps(event)
     dead = set()
     for ws in list(_chat_clients):
@@ -59,17 +60,20 @@ async def _broadcast_chat(event: dict) -> None:
             await ws.send_text(payload)
         except Exception:
             dead.add(ws)
-    _chat_clients -= dead
+    for ws in dead:
+        _chat_clients.discard(ws)
 
 
 def _sync_broadcast(event: dict) -> None:
     """Thread-safe push called from sync code (bridge callbacks)."""
+    if _main_loop is None:
+        return
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.create_task(_broadcast_chat(event))
+        _main_loop.call_soon_threadsafe(
+            asyncio.create_task, _broadcast_chat(event)
+        )
     except Exception:
-        pass
+        logger.exception("Failed to schedule chat broadcast")
 
 
 # Register the broadcast callback so agent_bridge can push quota warnings
@@ -79,10 +83,19 @@ bridge.set_notify_callback(_sync_broadcast)
 # ── Startup: pre-warm simulation ──────────────────────────────────────────────
 @app.on_event("startup")
 async def startup():
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
     logger.info("Pre-warming MuJoCo simulation…")
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, bridge.get_simulation)
+    await _main_loop.run_in_executor(None, bridge.get_simulation)
     logger.info("Simulation ready")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    logger.info("Shutting down SemSorter resources…")
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, bridge.close_resources)
+    logger.info("Shutdown complete")
 
 
 # ── REST endpoints ────────────────────────────────────────────────────────────
@@ -98,6 +111,11 @@ async def api_state():
     loop = asyncio.get_event_loop()
     state = await loop.run_in_executor(None, bridge._state_impl)
     return JSONResponse(state)
+
+
+@app.get("/health")
+async def health():
+    return JSONResponse({"ok": True})
 
 
 @app.post("/api/sort")
@@ -178,8 +196,7 @@ async def ws_chat(ws: WebSocket):
 
 def _render_frame_jpeg(quality: int = 75) -> bytes:
     """Render a MuJoCo frame and encode as JPEG bytes."""
-    sim = bridge.get_simulation()
-    frame = sim.render_frame(camera="overview")         # numpy H×W×3
+    frame = bridge.render_frame(camera="overview")         # numpy H×W×3
     img = Image.fromarray(frame)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality)

@@ -12,8 +12,11 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,8 @@ for _plugin in ("gemini", "deepgram", "elevenlabs", "getstream"):
     _plugin_path = _PROJECT_ROOT / "Vision-Agents" / "plugins" / _plugin
     if _plugin_path.exists():
         sys.path.insert(0, str(_plugin_path))
+
+load_dotenv(_PROJECT_ROOT / ".env")
 
 # ── Quota-tracking state ──────────────────────────────────────────────────────
 _quota_exceeded: Dict[str, bool] = {
@@ -55,6 +60,7 @@ _bridge = None
 _llm = None
 _tts = None
 _notify_cb: Optional[Callable[[Dict], None]] = None  # Push events to WebSocket
+_sim_lock = threading.RLock()
 
 
 def set_notify_callback(cb: Callable[[Dict], None]) -> None:
@@ -73,9 +79,10 @@ def _push(event: Dict) -> None:
 
 
 def _check_quota_error(exc: Exception) -> Optional[str]:
-    """Return service name if the exception indicates API quota exhaustion."""
+    """Return service name if the exception indicates quota/auth API failures."""
     msg = str(exc).lower()
-    if "resource_exhausted" in msg or "429" in msg or "quota" in msg:
+    if ("resource_exhausted" in msg or "429" in msg or "quota" in msg
+            or "invalid api key" in msg or "unauthorized" in msg or "401" in msg):
         if "gemini" in msg or "google" in msg:
             return "gemini"
         if "deepgram" in msg:
@@ -105,23 +112,25 @@ def _mark_quota_exceeded(service: str) -> None:
 
 def get_simulation():
     global _sim
-    if _sim is None:
-        os.environ.setdefault("MUJOCO_GL", "egl")
-        from controller import SemSorterSimulation
-        logger.info("Initialising MuJoCo simulation…")
-        _sim = SemSorterSimulation()
-        _sim.load_scene()
-        _sim.step(300)
-        logger.info("Simulation ready: %d items", len(_sim.items))
+    with _sim_lock:
+        if _sim is None:
+            os.environ.setdefault("MUJOCO_GL", "egl")
+            from controller import SemSorterSimulation
+            logger.info("Initialising MuJoCo simulation…")
+            _sim = SemSorterSimulation()
+            _sim.load_scene()
+            _sim.step(300)
+            logger.info("Simulation ready: %d items", len(_sim.items))
     return _sim
 
 
 def get_bridge():
     global _bridge
-    if _bridge is None:
-        from vlm_bridge import VLMSimBridge
-        _bridge = VLMSimBridge(simulation=get_simulation(), use_direct=True)
-        logger.info("VLM bridge ready")
+    with _sim_lock:
+        if _bridge is None:
+            from vlm_bridge import VLMSimBridge
+            _bridge = VLMSimBridge(simulation=get_simulation(), use_direct=True)
+            logger.info("VLM bridge ready")
     return _bridge
 
 
@@ -171,9 +180,7 @@ async def _scan_hazards_impl() -> Dict[str, Any]:
     try:
         bridge = get_bridge()
         loop = asyncio.get_event_loop()
-        detections = await loop.run_in_executor(
-            None, bridge.processor.detect_hazards)
-        matched = bridge.match_detections_to_items(detections)
+        detections, matched = await loop.run_in_executor(None, _detect_and_match_impl)
         return _format_scan(matched, demo=False)
     except Exception as exc:
         svc = _check_quota_error(exc)
@@ -216,14 +223,15 @@ async def _pick_place_impl(item_name: str, bin_type: str) -> Dict[str, Any]:
         return {"success": False, "error": f"{item_name} already sorted"}
 
     loop = asyncio.get_event_loop()
-    success = await loop.run_in_executor(None, sim.pick_and_place, item_name, target)
+    success = await loop.run_in_executor(None, _pick_place_sync, sim, item_name, target)
     return {"success": success, "item": item_name, "bin": bin_type,
             "total_sorted": sim._items_sorted}
 
 
 def _state_impl() -> Dict[str, Any]:
-    sim = get_simulation()
-    state = sim.get_state()
+    with _sim_lock:
+        sim = get_simulation()
+        state = sim.get_state()
     return {
         "time": round(state.time, 2),
         "arm_busy": state.arm_busy,
@@ -263,6 +271,31 @@ async def _sort_all_impl() -> Dict[str, Any]:
             "items_sorted": sorted_count, "details": details, "demo_mode": demo}
 
 
+def render_frame(camera: str = "overview"):
+    """Thread-safe simulation frame render for the video WS endpoint."""
+    with _sim_lock:
+        sim = get_simulation()
+        return sim.render_frame(camera=camera)
+
+
+def close_resources() -> None:
+    """Best-effort shutdown for long-running server process."""
+    global _bridge, _sim
+    with _sim_lock:
+        if _bridge is not None:
+            try:
+                _bridge.close()
+            except Exception:
+                pass
+            _bridge = None
+        if _sim is not None and hasattr(_sim, "close"):
+            try:
+                _sim.close()
+            except Exception:
+                pass
+            _sim = None
+
+
 # ── Text → agent response ─────────────────────────────────────────────────────
 
 async def process_text_command(text: str) -> str:
@@ -286,6 +319,20 @@ async def process_text_command(text: str) -> str:
             return await _llm_demo_response(text)
         logger.exception("LLM error")
         return f"Error processing command: {exc}"
+
+
+def _detect_and_match_impl():
+    """Run detect+match atomically to avoid simulation/render race conditions."""
+    with _sim_lock:
+        bridge = get_bridge()
+        detections = bridge.processor.detect_hazards()
+        matched = bridge.match_detections_to_items(detections)
+        return detections, matched
+
+
+def _pick_place_sync(sim, item_name: str, target) -> bool:
+    with _sim_lock:
+        return sim.pick_and_place(item_name, target)
 
 
 async def _llm_demo_response(text: str) -> str:

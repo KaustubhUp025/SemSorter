@@ -14,13 +14,11 @@ Usage:
 
 import os
 import sys
-import cv2
 import json
-import time
 import logging
 import google.generativeai as genai
 from PIL import Image
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +96,14 @@ class HazardDetectionProcessor:
 
     def _capture_from_obs(self) -> Image.Image:
         """Capture a frame from the OBS Virtual Camera."""
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError(
+                "OpenCV is required for OBS capture mode. "
+                "Install opencv-python or opencv-python-headless."
+            ) from exc
+
         if self._video_cap is None or not self._video_cap.isOpened():
             self._video_cap = cv2.VideoCapture(self.device_id)
             if not self._video_cap.isOpened():
