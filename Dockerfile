@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglx0 \
     libx11-6 \
     wget \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Create working directory ──────────────────────────────────────────────────
@@ -21,6 +22,9 @@ RUN pip install --no-cache-dir -r requirements-server.txt
 
 # ── Copy project ──────────────────────────────────────────────────────────────
 COPY . .
+
+# ── Download MuJoCo Menagerie (Panda arm) ─────────────────────────────────────
+RUN git clone --depth 1 https://github.com/google-deepmind/mujoco_menagerie.git
 
 # ── MuJoCo environment ────────────────────────────────────────────────────────
 ENV MUJOCO_GL=egl
