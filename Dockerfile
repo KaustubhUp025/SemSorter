@@ -36,5 +36,10 @@ ENV PYOPENGL_PLATFORM=egl
 # ── Expose port ───────────────────────────────────────────────────────────────
 EXPOSE 8000
 
+# ── Limit Threads to save memory on Render Free Tier ──────────────────────────
+ENV OPENBLAS_NUM_THREADS=1
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+
 # ── Start server ──────────────────────────────────────────────────────────────
-CMD ["uvicorn", "SemSorter.server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "SemSorter.server.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

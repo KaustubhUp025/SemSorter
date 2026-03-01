@@ -166,9 +166,9 @@ class SemSorterSimulation:
         # Modify the model name
         spec.modelname = "semsorter"
 
-        # Set offscreen framebuffer size for rendering
-        spec.visual.global_.offwidth = 1920
-        spec.visual.global_.offheight = 1080
+        # Set offscreen framebuffer size for rendering (lowered to save RAM on Render Free Tier)
+        spec.visual.global_.offwidth = 960
+        spec.visual.global_.offheight = 540
 
         # ─── Add additional lights ───────────────────────────────────────
         world = spec.worldbody
