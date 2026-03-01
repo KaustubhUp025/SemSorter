@@ -160,7 +160,7 @@ def get_simulation():
     global _sim
     with _sim_lock:
         if _sim is None:
-            os.environ.setdefault("MUJOCO_GL", "osmesa")
+            os.environ.setdefault("MUJOCO_GL", "egl")
             from controller import SemSorterSimulation
             logger.info("Initialising MuJoCo simulation…")
             _sim = SemSorterSimulation()

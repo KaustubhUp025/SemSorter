@@ -35,8 +35,8 @@ RUN git clone --depth 1 --filter=blob:none --sparse https://github.com/google-de
     && rm -rf .git
 
 # ── MuJoCo environment ────────────────────────────────────────────────────────
-ENV MUJOCO_GL=osmesa
-ENV PYOPENGL_PLATFORM=osmesa
+ENV MUJOCO_GL=egl
+ENV PYOPENGL_PLATFORM=egl
 
 # ── Expose port ───────────────────────────────────────────────────────────────
 EXPOSE 8000
