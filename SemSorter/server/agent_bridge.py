@@ -184,37 +184,52 @@ def get_bridge():
 
 
 def get_llm():
-    """Return a configured gemini.LLM instance from the Vision-Agents SDK."""
+    """Return a configured google.generativeai chat session instead of Vision-Agents."""
     global _llm
     if _llm is None:
-        from vision_agents.plugins.gemini.gemini_llm import GeminiLLM as GeminiLLMCls
-        _llm = GeminiLLMCls("gemini-2.0-flash")
-        _register_tools(_llm)
-        logger.info("Gemini LLM ready")
+        import google.generativeai as genai
+        import asyncio
+        
+        # Define native Gemini tools
+        def scan_for_hazards() -> dict:
+            """Scan the conveyor belt for hazardous items."""
+            import app
+            loop = getattr(app, "_main_loop", None) or asyncio.get_event_loop()
+            return asyncio.run_coroutine_threadsafe(_trigger_scan_with_ui(), loop).result()
+
+        def pick_and_place_item(item_name: str, bin_type: str) -> dict:
+            """Pick a specific item by sim name and place it in its bin. bin_type must be 'flammable' or 'chemical'."""
+            import app
+            loop = getattr(app, "_main_loop", None) or asyncio.get_event_loop()
+            return asyncio.run_coroutine_threadsafe(_pick_place_impl(item_name, bin_type), loop).result()
+
+        def get_simulation_state() -> dict:
+            """Get current simulation state snapshot."""
+            return _state_impl()
+
+        def sort_all_hazards() -> dict:
+            """Detect ALL hazardous items and sort them automatically."""
+            import app
+            loop = getattr(app, "_main_loop", None) or asyncio.get_event_loop()
+            return asyncio.run_coroutine_threadsafe(_trigger_sort_with_ui(), loop).result()
+            
+        api_key = os.environ.get("GOOGLE_API_KEY", "")
+        if api_key:
+            genai.configure(api_key=api_key)
+        
+        model = genai.GenerativeModel(
+            model_name="gemini-2.0-flash",
+            tools=[scan_for_hazards, pick_and_place_item, get_simulation_state, sort_all_hazards],
+            system_instruction=(
+                "You are an AI assistant controlling SemSorter, a robotic waste sorting system. "
+                "You can scan the conveyor belt for hazardous items and pick/place them into bins. "
+                "Call the appropriate tools enthusiastically based on user requests."
+            )
+        )
+        _llm = model.start_chat(enable_automatic_function_calling=True)
+        import logging
+        logging.getLogger(__name__).info("Direct Gemini LLM ready (saved ~100MB RAM)")
     return _llm
-
-
-def _register_tools(llm) -> None:
-    """Register simulation control tools on the LLM."""
-
-    @llm.register_function(description="Scan the conveyor belt for hazardous items.")
-    async def scan_for_hazards() -> Dict[str, Any]:
-        return await _trigger_scan_with_ui()
-
-    @llm.register_function(
-        description="Pick a specific item by sim name and place it in its bin. "
-                    "bin_type must be 'flammable' or 'chemical'.")
-    async def pick_and_place_item(item_name: str, bin_type: str) -> Dict[str, Any]:
-        return await _pick_place_impl(item_name, bin_type)
-
-    @llm.register_function(description="Get current simulation state snapshot.")
-    async def get_simulation_state() -> Dict[str, Any]:
-        return _state_impl()
-
-    @llm.register_function(
-        description="Detect ALL hazardous items and sort them automatically.")
-    async def sort_all_hazards() -> Dict[str, Any]:
-        return await _trigger_sort_with_ui()
 
 
 # ── Tool implementations ──────────────────────────────────────────────────────
@@ -461,7 +476,7 @@ async def process_text_command(text: str) -> str:
     try:
         llm = get_llm()
         # Use the LLM's send_message method to get a response with tool-calling
-        response_event = await llm.send_message(message=text)
+        response_event = await asyncio.to_thread(llm.send_message, text)
         return response_event.text
     except Exception as exc:
         svc = _check_quota_error(exc)
