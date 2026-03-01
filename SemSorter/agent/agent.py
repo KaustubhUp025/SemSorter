@@ -33,7 +33,7 @@ sys.path.insert(0, str(SEMSORTER_DIR / "simulation"))
 sys.path.insert(0, str(SEMSORTER_DIR / "vision"))
 
 # Load environment variables
-load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(PROJECT_ROOT / ".env", override=True)
 
 # ─── Simulation singleton ───────────────────────────────────────────────────
 _simulation = None
@@ -223,7 +223,7 @@ async def create_agent(**kwargs) -> Agent:
         agent_user=User(name="SemSorter AI", id="semsorter-agent"),
         instructions=INSTRUCTIONS,
         llm=llm,
-        tts=elevenlabs.TTS(model_id="eleven_flash_v2_5"),
+        tts=elevenlabs.TTS(model_id="eleven_flash_v2_5", voice_id="JBFqnCBsd6RMkjVDRZzb"),
         stt=deepgram.STT(eager_turn_detection=True),
         processors=[],
     )

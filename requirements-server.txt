@@ -8,7 +8,7 @@ pillow==10.4.0
 numpy==1.26.4
 
 # MuJoCo (headless, EGL)
-mujoco==3.2.0
+mujoco==3.5.0
 
 # Google Gemini (legacy + new SDK — both used for compatibility)
 google-generativeai==0.8.3
@@ -16,3 +16,16 @@ google-genai==1.0.0
 
 # dotenv for loading .env files
 python-dotenv==1.0.1
+
+# Telephony and Streaming (Vision-Agents SDK transitive requirements)
+colorlog==6.10.1
+onnxruntime==1.23.2
+aiortc==1.14.0
+getstream==2.5.19
+ping3==5.1.5
+websocket-client==1.9.0
+aiohttp==3.13.3
+opentelemetry-api==1.39.1
+opentelemetry-sdk==1.39.1
+elevenlabs==2.37.0
+protobuf<6

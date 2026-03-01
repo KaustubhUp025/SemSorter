@@ -12,6 +12,7 @@ GET  /api/state     → current simulation state JSON
 POST /api/sort      → trigger sort_all_hazards pipeline
 POST /api/command   → send a text command to the agent
 POST /api/transcribe → transcribe uploaded audio via Deepgram
+GET  /api/tts        → synthesize TTS via ElevenLabs
 
 Run locally:
     cd SemSorter && MUJOCO_GL=egl uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload
@@ -19,17 +20,15 @@ Run locally:
 
 import asyncio
 import base64
-import io
 import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Set
+from typing import Any, Awaitable, Callable, Optional, Set, Tuple
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from PIL import Image
 
 # ── Local imports ─────────────────────────────────────────────────────────────
 from . import agent_bridge as bridge
@@ -48,6 +47,10 @@ _STATIC.mkdir(exist_ok=True)
 _chat_clients: Set[WebSocket] = set()
 _video_clients: Set[WebSocket] = set()
 _main_loop: Optional[asyncio.AbstractEventLoop] = None
+_sim_tick_task: Optional[asyncio.Task] = None
+_action_lock = asyncio.Lock()
+_active_action: Optional[str] = None
+_frame_ready_event: Optional[asyncio.Event] = None
 
 
 async def _broadcast_chat(event: dict) -> None:
@@ -79,22 +82,86 @@ def _sync_broadcast(event: dict) -> None:
 # Register the broadcast callback so agent_bridge can push quota warnings
 bridge.set_notify_callback(_sync_broadcast)
 
+async def _run_exclusive_action(
+    action: str, work: Callable[[], Awaitable[dict]]
+) -> Tuple[bool, dict]:
+    """Run long scan/sort actions one-at-a-time and publish lifecycle events."""
+    global _active_action
+    if _action_lock.locked():
+        busy = _active_action or "another action"
+        await _broadcast_chat({
+            "type": "action_status",
+            "action": action,
+            "status": "rejected",
+            "reason": busy,
+        })
+        return False, {"success": False, "error": f"{busy} already in progress"}
+
+    await _action_lock.acquire()
+    _active_action = action
+    await _broadcast_chat({
+        "type": "action_status",
+        "action": action,
+        "status": "started",
+    })
+    try:
+        result = await work()
+        await _broadcast_chat({
+            "type": "action_status",
+            "action": action,
+            "status": "finished",
+        })
+        return True, result
+    except Exception as exc:
+        await _broadcast_chat({
+            "type": "action_status",
+            "action": action,
+            "status": "failed",
+            "reason": str(exc),
+        })
+        raise
+    finally:
+        _active_action = None
+        _action_lock.release()
+
+bridge.set_action_runner(_run_exclusive_action)
+
 
 # ── Startup: pre-warm simulation ──────────────────────────────────────────────
+async def _simulation_tick_loop() -> None:
+    """Keep simulation progressing even when no control action is running."""
+    while True:
+        try:
+            await bridge.run_in_sim_thread(bridge.step_simulation, 2)
+        except Exception:
+            logger.exception("Simulation tick loop error")
+        await asyncio.sleep(0.02)
+
+
 @app.on_event("startup")
 async def startup():
-    global _main_loop
+    global _main_loop, _sim_tick_task, _frame_ready_event
     _main_loop = asyncio.get_running_loop()
+    _frame_ready_event = asyncio.Event()
+    bridge.set_frame_ready_event(_main_loop, _frame_ready_event)
     logger.info("Pre-warming MuJoCo simulation…")
-    await _main_loop.run_in_executor(None, bridge.get_simulation)
+    await bridge.run_in_sim_thread(bridge.get_simulation)
+    _sim_tick_task = asyncio.create_task(_simulation_tick_loop())
     logger.info("Simulation ready")
 
 
 @app.on_event("shutdown")
 async def shutdown():
+    global _sim_tick_task
     logger.info("Shutting down SemSorter resources…")
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, bridge.close_resources)
+    if _sim_tick_task is not None:
+        _sim_tick_task.cancel()
+        try:
+            await _sim_tick_task
+        except asyncio.CancelledError:
+            pass
+        _sim_tick_task = None
+    bridge.close_resources()
     logger.info("Shutdown complete")
 
 
@@ -108,8 +175,9 @@ async def index():
 
 @app.get("/api/state")
 async def api_state():
-    loop = asyncio.get_event_loop()
-    state = await loop.run_in_executor(None, bridge._state_impl)
+    state = await bridge.run_in_sim_thread(bridge._state_impl)
+    state["action_busy"] = _action_lock.locked()
+    state["active_action"] = _active_action
     return JSONResponse(state)
 
 
@@ -121,7 +189,9 @@ async def health():
 @app.post("/api/sort")
 async def api_sort():
     """Trigger the full detect-match-sort pipeline."""
-    result = await bridge._sort_all_impl()
+    accepted, result = await _run_exclusive_action("sort", bridge._sort_all_impl)
+    if not accepted:
+        return JSONResponse(result, status_code=409)
     await _broadcast_chat({"type": "sort_result", "data": result})
     return JSONResponse(result)
 
@@ -144,6 +214,17 @@ async def api_transcribe(file: UploadFile = File(...)):
     return JSONResponse({"transcript": transcript})
 
 
+@app.get("/api/tts")
+async def api_tts(text: str):
+    """Generate audio from text using ElevenLabs TTS."""
+    if not text:
+        return JSONResponse({"error": "empty text"}, status_code=400)
+    audio_bytes = await bridge.text_to_speech(text)
+    if audio_bytes is None:
+        return JSONResponse({"error": "TTS failed or quota exceeded"}, status_code=500)
+    return Response(content=audio_bytes, media_type="audio/mpeg")
+
+
 # ── WebSocket: chat ───────────────────────────────────────────────────────────
 
 @app.websocket("/ws/chat")
@@ -157,34 +238,71 @@ async def ws_chat(ws: WebSocket):
             "text": "Connected to SemSorter AI. Ask me to scan or sort items!",
         }))
         while True:
-            raw = await ws.receive_text()
+            try:
+                raw = await ws.receive_text()
+            except WebSocketDisconnect:
+                break
+            except RuntimeError as exc:
+                # Starlette can raise RuntimeError on abrupt client close.
+                if "websocket is not connected" in str(exc).lower():
+                    break
+                raise
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
                 msg = {"type": "command", "text": raw}
 
-            msg_type = msg.get("type", "command")
+            try:
+                msg_type = msg.get("type", "command")
 
-            if msg_type == "command":
-                text = msg.get("text", "").strip()
-                if text:
-                    await _broadcast_chat({"type": "user_message", "text": text})
-                    response = await bridge.process_text_command(text)
-                    await _broadcast_chat({"type": "agent_response", "text": response})
+                if msg_type == "command":
+                    text = msg.get("text", "").strip()
+                    if text:
+                        await _broadcast_chat({"type": "user_message", "text": text})
+                        response = await bridge.process_text_command(text)
+                        await _broadcast_chat({"type": "agent_response", "text": response})
 
-            elif msg_type == "scan":
-                result = await bridge._scan_hazards_impl()
-                await _broadcast_chat({"type": "scan_result", "data": result})
+                elif msg_type == "scan":
+                    accepted, result = await _run_exclusive_action(
+                        "scan", bridge._scan_hazards_impl
+                    )
+                    if accepted:
+                        await _broadcast_chat({"type": "scan_result", "data": result})
+                    else:
+                        await ws.send_text(json.dumps({
+                            "type": "system",
+                            "text": result.get("error", "scan already in progress"),
+                        }))
 
-            elif msg_type == "sort":
-                result = await bridge._sort_all_impl()
-                await _broadcast_chat({"type": "sort_result", "data": result})
+                elif msg_type == "sort":
+                    accepted, result = await _run_exclusive_action(
+                        "sort", bridge._sort_all_impl
+                    )
+                    if accepted:
+                        await _broadcast_chat({"type": "sort_result", "data": result})
+                    else:
+                        await ws.send_text(json.dumps({
+                            "type": "system",
+                            "text": result.get("error", "sort already in progress"),
+                        }))
 
-            elif msg_type == "state":
-                loop = asyncio.get_event_loop()
-                state = await loop.run_in_executor(None, bridge._state_impl)
-                await ws.send_text(json.dumps({"type": "state", "data": state}))
+                elif msg_type == "state":
+                    state = await bridge.run_in_sim_thread(bridge._state_impl)
+                    await ws.send_text(json.dumps({"type": "state", "data": state}))
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.exception("Chat action failed")
+                try:
+                    await ws.send_text(json.dumps({
+                        "type": "system",
+                        "text": f"Action failed: {exc}",
+                    }))
+                except Exception:
+                    break
 
+    except asyncio.CancelledError:
+        pass
     except WebSocketDisconnect:
         pass
     finally:
@@ -193,29 +311,32 @@ async def ws_chat(ws: WebSocket):
 
 
 # ── WebSocket: live video stream ──────────────────────────────────────────────
-
-def _render_frame_jpeg(quality: int = 75) -> bytes:
-    """Render a MuJoCo frame and encode as JPEG bytes."""
-    frame = bridge.render_frame(camera="overview")         # numpy H×W×3
-    img = Image.fromarray(frame)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality)
-    return buf.getvalue()
-
-
 @app.websocket("/ws/video")
 async def ws_video(ws: WebSocket):
     await ws.accept()
     _video_clients.add(ws)
     logger.info("Video client connected")
     try:
-        loop = asyncio.get_event_loop()
         while True:
-            jpeg_bytes = await loop.run_in_executor(None, _render_frame_jpeg)
+            # Wait for new frame (event-driven; sends exactly when sim produces one)
+            if _frame_ready_event is not None:
+                try:
+                    await asyncio.wait_for(_frame_ready_event.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    pass  # Fall through to try get_latest_frame_jpeg
+                _frame_ready_event.clear()
+            jpeg_bytes = bridge.get_latest_frame_jpeg()
+            if not jpeg_bytes:
+                await bridge.run_in_sim_thread(bridge.step_simulation, 1)
+                jpeg_bytes = bridge.get_latest_frame_jpeg()
+                if not jpeg_bytes:
+                    await asyncio.sleep(0.05)
+                    continue
             b64 = base64.b64encode(jpeg_bytes).decode()
             await ws.send_text(json.dumps({"type": "frame", "data": b64}))
-            await asyncio.sleep(0.1)   # ~10 fps
     except WebSocketDisconnect:
+        pass
+    except asyncio.CancelledError:
         pass
     except Exception as e:
         logger.warning("Video stream error: %s", e)

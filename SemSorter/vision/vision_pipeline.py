@@ -122,6 +122,71 @@ class HazardDetectionProcessor:
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return Image.fromarray(frame_rgb)
 
+    def analyze_frame_local(self, pil_image: Image.Image) -> List[Dict]:
+        """
+        Local color-based hazard detection (no API). Low accuracy but works offline.
+        Detects red (flammable) and yellow (chemical) regions via HSV thresholds.
+        Returns same format as Gemini for compatibility with match_detections_to_items.
+        """
+        try:
+            import numpy as np
+            import cv2
+        except ImportError as e:
+            logger.warning("OpenCV required for local detection; install opencv-python")
+            raise RuntimeError("OpenCV not installed") from e
+
+        arr = np.array(pil_image)
+        if arr.ndim == 2:
+            arr = np.stack([arr] * 3, axis=-1)
+        hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
+        h, w = arr.shape[:2]
+        scale = 1000.0 / max(h, w)
+
+        detections = []
+        # Red: two HSV ranges (red wraps around hue)
+        for low, high in [
+            ((0, 100, 100), (10, 255, 255)),
+            ((160, 100, 100), (180, 255, 255)),
+        ]:
+            mask = cv2.inRange(hsv, np.array(low), np.array(high))
+            for cnt in self._find_blobs(mask, min_area=200):
+                x, y, bw, bh = cv2.boundingRect(cnt)
+                detections.append({
+                    "name": f"red_item_{len(detections)}",
+                    "type": "FLAMMABLE",
+                    "color": "red",
+                    "shape": "box",
+                    "box_2d": [int(y * scale), int(x * scale),
+                               int((y + bh) * scale), int((x + bw) * scale)],
+                })
+
+        # Yellow
+        mask = cv2.inRange(hsv, np.array([20, 100, 100]), np.array([35, 255, 255]))
+        for cnt in self._find_blobs(mask, min_area=200):
+            x, y, bw, bh = cv2.boundingRect(cnt)
+            detections.append({
+                "name": f"yellow_item_{len(detections)}",
+                "type": "CHEMICAL",
+                "color": "yellow",
+                "shape": "box",
+                "box_2d": [int(y * scale), int(x * scale),
+                           int((y + bh) * scale), int((x + bw) * scale)],
+            })
+
+        logger.info("Local detector found %d hazardous regions", len(detections))
+        return detections
+
+    def _find_blobs(self, mask, min_area=200):
+        """Find contours and filter by area."""
+        try:
+            import cv2
+        except ImportError:
+            return []
+        contours, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        return [c for c in contours if cv2.contourArea(c) >= min_area]
+
     def analyze_frame(self, pil_image: Image.Image) -> List[Dict]:
         """
         Send the image to Gemini VLM and parse the structured JSON response.
@@ -134,6 +199,15 @@ class HazardDetectionProcessor:
             "Identify all FLAMMABLE (red) and CHEMICAL (yellow) items "
             "on the conveyor belt. Return their positions as bounding boxes."
         )
+
+        # Scale down image if it's too large to save network upload time
+        max_dim = 1024
+        if max(pil_image.width, pil_image.height) > max_dim:
+            ratio = max_dim / float(max(pil_image.width, pil_image.height))
+            new_size = (int(pil_image.width * ratio), int(pil_image.height * ratio))
+            resample_filter = getattr(Image, 'Resampling', Image).LANCZOS
+            pil_image = pil_image.resize(new_size, resample_filter)
+            logger.info(f"Resized image to {new_size} for VLM analysis")
 
         logger.info("Sending frame to Gemini VLM...")
         model = self._get_gemini_model()

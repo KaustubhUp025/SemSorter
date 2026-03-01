@@ -1,6 +1,6 @@
 <mujoco model="semsorter">
   <!-- Let panda.xml handle its own meshdir via its embedded compiler element -->
-  <compiler angle="radian" autolimits="true"/>
+  <compiler angle="radian" autolimits="true" meshdir="../../mujoco_menagerie/franka_emika_panda/assets/"/>
 
   <option integrator="implicitfast" gravity="0 0 -9.81" timestep="0.002"/>
 
@@ -106,13 +106,13 @@
     <!-- ======================================================== -->
     <body name="bin_flammable" pos="-0.25 0.45 0">
       <!-- Bin walls (open top box) -->
-      <geom name="bin_fl_back"  type="box" size="0.1 0.005 0.12" pos="0 -0.095 0.12" material="bin_flammable_mat"/>
-      <geom name="bin_fl_front" type="box" size="0.1 0.005 0.12" pos="0 0.095 0.12" material="bin_flammable_mat"/>
-      <geom name="bin_fl_left"  type="box" size="0.005 0.1 0.12" pos="-0.095 0 0.12" material="bin_flammable_mat"/>
-      <geom name="bin_fl_right" type="box" size="0.005 0.1 0.12" pos="0.095 0 0.12" material="bin_flammable_mat"/>
-      <geom name="bin_fl_bottom" type="box" size="0.1 0.1 0.005" pos="0 0 0.005" material="bin_inner_mat"/>
+      <geom name="bin_fl_back"  type="box" size="0.15 0.005 0.12" pos="0 -0.145 0.12" material="bin_flammable_mat"/>
+      <geom name="bin_fl_front" type="box" size="0.15 0.005 0.12" pos="0 0.145 0.12" material="bin_flammable_mat"/>
+      <geom name="bin_fl_left"  type="box" size="0.005 0.15 0.12" pos="-0.145 0 0.12" material="bin_flammable_mat"/>
+      <geom name="bin_fl_right" type="box" size="0.005 0.15 0.12" pos="0.145 0 0.12" material="bin_flammable_mat"/>
+      <geom name="bin_fl_bottom" type="box" size="0.15 0.15 0.005" pos="0 0 0.005" material="bin_inner_mat"/>
       <!-- Label area (slightly raised red panel on front) -->
-      <site name="bin_flammable_label" pos="0 0.1 0.18" size="0.06 0.005 0.03" type="box" rgba="1 0 0 1"/>
+      <site name="bin_flammable_label" pos="0 0.15 0.18" size="0.06 0.005 0.03" type="box" rgba="1 0 0 1"/>
     </body>
 
     <!-- ======================================================== -->
@@ -120,13 +120,13 @@
     <!-- ======================================================== -->
     <body name="bin_chemical" pos="0.25 0.45 0">
       <!-- Bin walls (open top box) -->
-      <geom name="bin_ch_back"  type="box" size="0.1 0.005 0.12" pos="0 -0.095 0.12" material="bin_chemical_mat"/>
-      <geom name="bin_ch_front" type="box" size="0.1 0.005 0.12" pos="0 0.095 0.12" material="bin_chemical_mat"/>
-      <geom name="bin_ch_left"  type="box" size="0.005 0.1 0.12" pos="-0.095 0 0.12" material="bin_chemical_mat"/>
-      <geom name="bin_ch_right" type="box" size="0.005 0.1 0.12" pos="0.095 0 0.12" material="bin_chemical_mat"/>
-      <geom name="bin_ch_bottom" type="box" size="0.1 0.1 0.005" pos="0 0 0.005" material="bin_inner_mat"/>
+      <geom name="bin_ch_back"  type="box" size="0.15 0.005 0.12" pos="0 -0.145 0.12" material="bin_chemical_mat"/>
+      <geom name="bin_ch_front" type="box" size="0.15 0.005 0.12" pos="0 0.145 0.12" material="bin_chemical_mat"/>
+      <geom name="bin_ch_left"  type="box" size="0.005 0.15 0.12" pos="-0.145 0 0.12" material="bin_chemical_mat"/>
+      <geom name="bin_ch_right" type="box" size="0.005 0.15 0.12" pos="0.145 0 0.12" material="bin_chemical_mat"/>
+      <geom name="bin_ch_bottom" type="box" size="0.15 0.15 0.005" pos="0 0 0.005" material="bin_inner_mat"/>
       <!-- Label area -->
-      <site name="bin_chemical_label" pos="0 0.1 0.18" size="0.06 0.005 0.03" type="box" rgba="1 0.8 0 1"/>
+      <site name="bin_chemical_label" pos="0 0.15 0.18" size="0.06 0.005 0.03" type="box" rgba="1 0.8 0 1"/>
     </body>
 
     <!-- ======================================================== -->

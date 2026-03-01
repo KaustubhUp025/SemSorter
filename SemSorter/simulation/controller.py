@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import mujoco
 import mujoco.viewer
@@ -49,6 +49,7 @@ class ItemInfo:
     is_hazardous: bool
     hazard_type: Optional[BinType] = None  # which bin it should go to
     picked: bool = False
+    respawn_at: float = 0.0
 
 
 @dataclass
@@ -64,9 +65,9 @@ class SimState:
 
 # ─── Bin positions (world coordinates) ───────────────────────────────────────
 BIN_POSITIONS = {
-    BinType.FLAMMABLE: np.array([-0.25, -0.40, 0.35]),   # Above the red bin
-    BinType.CHEMICAL:  np.array([0.25, -0.40, 0.35]),     # Above the yellow bin
-    BinType.OUTPUT:    np.array([0.40, 0.0, 0.40]),       # Output conveyor
+    BinType.FLAMMABLE: np.array([-0.15, -0.40, 0.55]),   # Above the red bin
+    BinType.CHEMICAL:  np.array([0.15, -0.40, 0.55]),     # Above the yellow bin
+    BinType.OUTPUT:    np.array([0.40, 0.40, 0.55]),      # Output conveyor
 }
 
 # ─── Panda joint configuration ──────────────────────────────────────────────
@@ -78,6 +79,13 @@ GRIPPER_OPEN = 255.0
 GRIPPER_CLOSED = 0.0
 NUM_ARM_JOINTS = 7
 ENV_CONTACT_TYPE = 2  # Keep environment/item contacts separate from robot links.
+CONVEYOR_SPEED_MPS = 0.09
+CONVEYOR_EXIT_X = 0.65
+CONVEYOR_ITEM_Z = 0.40
+HAZARD_RESPAWN_DELAY_SEC = 20.0
+# Force-based conveyor: F = kp * (v_target - v_current), clamped
+CONVEYOR_FORCE_KP = 10.0
+CONVEYOR_FORCE_MAX = 2.0
 
 
 class SemSorterSimulation:
@@ -96,6 +104,56 @@ class SemSorterSimulation:
         self._arm_busy = False
         self._items_sorted = 0
         self._running = False
+        self._item_spawn_positions: Dict[str, np.ndarray] = {}
+        self.frame_callback: Optional[Callable[[np.ndarray], None]] = None
+        self.status_callback: Optional[Callable[[Dict], None]] = None
+        self._stream_fps_idle = float(
+            os.environ.get("SEMSORTER_STREAM_FPS_IDLE", "5.0")
+        )
+        self._stream_fps_busy = float(
+            os.environ.get("SEMSORTER_STREAM_FPS_BUSY", "30.0")
+        )
+        self._stream_width = int(os.environ.get("SEMSORTER_STREAM_WIDTH", "960"))
+        self._stream_height = int(os.environ.get("SEMSORTER_STREAM_HEIGHT", "540"))
+        self._freeze_conveyor_when_busy = (
+            os.environ.get("SEMSORTER_FREEZE_CONVEYOR_WHEN_BUSY", "1").strip()
+            in {"1", "true", "yes", "on"}
+        )
+        self._conveyor_force_kp = float(
+            os.environ.get("SEMSORTER_CONVEYOR_FORCE_KP", str(CONVEYOR_FORCE_KP))
+        )
+        self._conveyor_force_max = float(
+            os.environ.get("SEMSORTER_CONVEYOR_FORCE_MAX", str(CONVEYOR_FORCE_MAX))
+        )
+        # Demo pacing: extra wall-time delay per arm simulation step.
+        # Set to 0 for max speed.
+        self._arm_step_sleep_sec = float(
+            os.environ.get("SEMSORTER_ARM_STEP_SLEEP_SEC", "0.0015")
+        )
+        self._pick_retries = max(
+            1, int(os.environ.get("SEMSORTER_PICK_RETRIES", "3"))
+        )
+        self._stabilize_unpicked_enabled = (
+            os.environ.get("SEMSORTER_STABILIZE_UNPICKED_ITEMS", "0").strip()
+            in {"1", "true", "yes", "on"}
+        )
+        # Physics-based grasp proxy (spring-damper to end-effector).
+        # Tuned for smooth carry: kp 120-150, kd 15-20 reduce wobble during fast motion.
+        # Env: SEMSORTER_GRASP_KP, SEMSORTER_GRASP_KD, SEMSORTER_GRASP_MAX_FORCE
+        self._grasped_item: Optional[str] = None
+        self._grasp_offset = np.zeros(3)
+        self._grasp_kp = float(os.environ.get("SEMSORTER_GRASP_KP", "135.0"))
+        self._grasp_kd = float(os.environ.get("SEMSORTER_GRASP_KD", "18.0"))
+        self._grasp_max_force = float(
+            os.environ.get("SEMSORTER_GRASP_MAX_FORCE", "50.0")
+        )
+        self._pick_target_item: Optional[str] = None
+        self._neutral_hand_quat: Optional[np.ndarray] = None
+        # Step-based frame publishing (set in load_scene after model is ready)
+        self._physics_steps_since_publish = 0
+        self._steps_per_frame_idle = 50
+        self._steps_per_frame_busy = 50
+        self._ik_in_progress = False
 
     # ─── Scene loading ───────────────────────────────────────────────────
 
@@ -144,8 +202,8 @@ class SemSorterSimulation:
         cam_side.fovy = 45
 
         # ─── Add conveyors ──────────────────────────────────────────────
-        self._add_conveyor(spec, "input", pos=[-0.40, 0, 0])
-        self._add_conveyor(spec, "output", pos=[0.40, 0, 0])
+        self._add_conveyor(spec, "input", pos=[-0.35, 0.40, 0])
+        self._add_conveyor(spec, "output", pos=[0.35, 0.40, 0])
 
         # ─── Add waste bins ─────────────────────────────────────────────
         self._add_bin(spec, "flammable", pos=[-0.25, -0.40, 0],
@@ -155,17 +213,17 @@ class SemSorterSimulation:
 
         # ─── Add hazardous items on input conveyor ──────────────────────
         items_spec = [
-            ("item_flammable_1", [-0.50, 0.0, 0.40], "cylinder", [0.025, 0.03],
+            ("item_flammable_1", [-0.50, 0.40, 0.40], "cylinder", [0.025, 0.03],
              [0.9, 0.1, 0.1, 1], True, BinType.FLAMMABLE),
-            ("item_chemical_1", [-0.40, 0.05, 0.40], "box", [0.025, 0.025, 0.025],
+            ("item_chemical_1", [-0.40, 0.45, 0.40], "box", [0.025, 0.025, 0.025],
              [0.95, 0.85, 0.1, 1], True, BinType.CHEMICAL),
-            ("item_chemical_2", [-0.30, -0.03, 0.40], "sphere", [0.025],
+            ("item_chemical_2", [-0.30, 0.37, 0.40], "sphere", [0.025],
              [0.95, 0.85, 0.1, 1], True, BinType.CHEMICAL),
-            ("item_safe_1", [-0.35, -0.05, 0.40], "box", [0.03, 0.025, 0.02],
+            ("item_safe_1", [-0.35, 0.35, 0.40], "box", [0.03, 0.025, 0.02],
              [0.6, 0.6, 0.6, 1], False, BinType.OUTPUT),
-            ("item_safe_2", [-0.55, 0.04, 0.40], "cylinder", [0.022, 0.025],
+            ("item_safe_2", [-0.55, 0.44, 0.40], "cylinder", [0.022, 0.025],
              [0.9, 0.9, 0.9, 1], False, BinType.OUTPUT),
-            ("item_flammable_2", [-0.45, 0.02, 0.40], "box", [0.022, 0.022, 0.022],
+            ("item_flammable_2", [-0.45, 0.42, 0.40], "box", [0.022, 0.022, 0.022],
              [0.9, 0.1, 0.1, 1], True, BinType.FLAMMABLE),
         ]
 
@@ -178,7 +236,7 @@ class SemSorterSimulation:
 
         # Store desired spawn positions for post-keyframe initialization
         self._item_spawn_positions = {
-            name: pos for name, pos, *_ in items_spec
+            name: np.array(pos, dtype=float) for name, pos, *_ in items_spec
         }
 
         # ─── Compile the model ──────────────────────────────────────────
@@ -218,6 +276,21 @@ class SemSorterSimulation:
                 self.data.qpos[qadr+3:qadr+7] = [1, 0, 0, 0]  # identity quat
 
         mujoco.mj_forward(self.model, self.data)
+        self.reset_arm_neutral()
+        hand_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, "hand")
+        if hand_id >= 0:
+            self._neutral_hand_quat = self.data.xquat[hand_id].copy()
+
+        # Step-based frame publishing: publish every N physics steps
+        dt = float(self.model.opt.timestep)
+        self._steps_per_frame_idle = max(
+            1, int(1.0 / (self._stream_fps_idle * dt))
+        )
+        self._steps_per_frame_busy = max(
+            1, int(1.0 / (self._stream_fps_busy * dt))
+        )
+        self._physics_steps_since_publish = 0
 
         logger.info(f"Scene compiled: {self.model.nbody} bodies, "
                      f"{self.model.njnt} joints, {self.model.nu} actuators")
@@ -272,10 +345,10 @@ class SemSorterSimulation:
 
         # Walls
         wall_specs = [
-            (f"bin_{name}_back",  [0, -0.095, 0.12], [0.1, 0.005, 0.12]),
-            (f"bin_{name}_front", [0, 0.095, 0.12],  [0.1, 0.005, 0.12]),
-            (f"bin_{name}_left",  [-0.095, 0, 0.12], [0.005, 0.1, 0.12]),
-            (f"bin_{name}_right", [0.095, 0, 0.12],  [0.005, 0.1, 0.12]),
+            (f"bin_{name}_back",  [0, -0.145, 0.12], [0.15, 0.005, 0.12]),
+            (f"bin_{name}_front", [0, 0.145, 0.12],  [0.15, 0.005, 0.12]),
+            (f"bin_{name}_left",  [-0.145, 0, 0.12], [0.005, 0.15, 0.12]),
+            (f"bin_{name}_right", [0.145, 0, 0.12],  [0.005, 0.15, 0.12]),
         ]
         for wname, wpos, wsize in wall_specs:
             wall = body.add_geom()
@@ -291,7 +364,7 @@ class SemSorterSimulation:
         bottom = body.add_geom()
         bottom.name = f"bin_{name}_bottom"
         bottom.type = mujoco.mjtGeom.mjGEOM_BOX
-        bottom.size = [0.1, 0.1, 0.005]
+        bottom.size = [0.15, 0.15, 0.005]
         bottom.pos = [0, 0, 0.005]
         bottom.rgba = [0.1, 0.1, 0.1, 1]
         bottom.contype = ENV_CONTACT_TYPE
@@ -360,6 +433,38 @@ class SemSorterSimulation:
         self.data.qvel[dadr:dadr+6] = 0.0
         return True
 
+    def _apply_conveyor_forces(self) -> None:
+        """
+        Apply velocity-tracking forces to conveyor items via xfrc_applied.
+        Items accelerate/decelerate smoothly through physics instead of
+        kinematic velocity snaps.
+        """
+        conveyor_running = (not self._arm_busy) or (
+            not self._freeze_conveyor_when_busy
+        )
+        v_target = CONVEYOR_SPEED_MPS if conveyor_running else 0.0
+
+        for name, info in self.items.items():
+            if name == self._grasped_item or name == self._pick_target_item:
+                continue
+            if info.picked:
+                continue
+            pos = self.get_item_pos(name)
+            if pos is None:
+                continue
+            if pos[0] > CONVEYOR_EXIT_X:
+                continue  # Past exit; respawn handles these
+
+            body_id = info.body_id
+            if body_id < 0:
+                continue
+            # cvel: [angular(3), linear(3)] in world frame
+            vx = self.data.cvel[body_id, 3]
+            err = v_target - vx
+            force_x = self._conveyor_force_kp * err
+            force_x = np.clip(force_x, -self._conveyor_force_max, self._conveyor_force_max)
+            self.data.xfrc_applied[body_id, 0] += force_x
+
     # ─── IK (Solver-based) ────────────────────────────────────────────
 
     def reset_arm_neutral(self) -> None:
@@ -391,6 +496,7 @@ class SemSorterSimulation:
         # Work on a copy of qpos
         qpos_arm = orig_qpos[:NUM_ARM_JOINTS].copy()
 
+        self._ik_in_progress = True
         try:
             for _ in range(max_iter):
                 # Temporarily set qpos, run forward kinematics
@@ -442,6 +548,7 @@ class SemSorterSimulation:
             return None  # Did not converge
             
         finally:
+            self._ik_in_progress = False
             # Always restore original qpos and run forward to fix physics state
             self.data.qpos[:] = orig_qpos
             mujoco.mj_forward(self.model, self.data)
@@ -450,6 +557,8 @@ class SemSorterSimulation:
                          move_steps: int = 400,
                          settle_steps: int = 100,
                          position_tolerance: float = 0.05,
+                         enforce_orientation: bool = True,
+                         target_quat: Optional[np.ndarray] = None,
                          carry_item: Optional[str] = None,
                          carry_offset: Optional[np.ndarray] = None) -> bool:
         """
@@ -459,7 +568,37 @@ class SemSorterSimulation:
         3. Step physics to let arm move
         Returns True if IK solution found.
         """
-        solution = self.solve_ik(target_pos)
+        desired_quat = target_quat
+        if desired_quat is None and enforce_orientation:
+            # Dynamically compute orientation so the hand points down
+            # but yaws towards the target position to avoid joint limits/awkward twists.
+            # _neutral_hand_quat points the palm down and +Y fingers forward.
+            # We want to rotate it around the Z axis by the angle of the target
+            angle = np.arctan2(target_pos[1], target_pos[0])
+            z_rot = np.array([np.cos(angle/2), 0.0, 0.0, np.sin(angle/2)])
+            desired_quat = np.zeros(4)
+            mujoco.mju_mulQuat(desired_quat, z_rot, self._neutral_hand_quat)
+            mujoco.mju_normalize4(desired_quat)
+
+        # Give IK a hint by seeding it with the neutral pose rotated to the target angle
+        orig_qpos_hint = self.data.qpos.copy()
+        
+        # We temporarily set the joints to a neutral posture pointing at the target
+        angle = np.arctan2(target_pos[1], target_pos[0])
+        neutral_qpos = [0.0, -0.3, 0.0, -2.0, 0.0, 1.8, 0.0]
+        self.data.qpos[:7] = neutral_qpos
+        self.data.qpos[0] = angle
+        
+        solution = self.solve_ik(target_pos, target_quat=desired_quat)
+        
+        if solution is None and desired_quat is not None:
+            # Fall back to position-only IK if orientation-constrained IK fails.
+            solution = self.solve_ik(target_pos, target_quat=None)
+            
+        # Restore qpos after solve_ik hint
+        self.data.qpos[:] = orig_qpos_hint
+        mujoco.mj_forward(self.model, self.data)
+        
         if solution is None:
             logger.warning(f"IK failed for target {target_pos}")
             return False
@@ -474,22 +613,23 @@ class SemSorterSimulation:
             alpha = (i + 1) / move_steps
             t = alpha * alpha * (3 - 2 * alpha)  # Smoothstep
             self.data.ctrl[:NUM_ARM_JOINTS] = current_ctrl * (1 - t) + solution * t
+            self.data.xfrc_applied[:] = 0.0
+            self._apply_grasp_forces()
+            self._advance_conveyor_items()
             mujoco.mj_step(self.model, self.data)
-            if carry_item is not None:
-                ee = self.get_ee_pos()
-                self._set_item_pose(carry_item, ee + carry_offset)
+            self._physics_steps_since_publish += 1
+            self._publish_frame_if_needed()
+            self._pace_arm_motion()
 
         # Settle
         for _ in range(settle_steps):
+            self.data.xfrc_applied[:] = 0.0
+            self._apply_grasp_forces()
+            self._advance_conveyor_items()
             mujoco.mj_step(self.model, self.data)
-            if carry_item is not None:
-                ee = self.get_ee_pos()
-                self._set_item_pose(carry_item, ee + carry_offset)
-
-        if carry_item is not None:
-            ee = self.get_ee_pos()
-            self._set_item_pose(carry_item, ee + carry_offset)
-            mujoco.mj_forward(self.model, self.data)
+            self._physics_steps_since_publish += 1
+            self._publish_frame_if_needed()
+            self._pace_arm_motion()
 
         final_ee = self.get_ee_pos()
         err = np.linalg.norm(target_pos - final_ee)
@@ -508,7 +648,148 @@ class SemSorterSimulation:
     def step(self, n: int = 1) -> None:
         """Advance the simulation by n steps."""
         for _ in range(n):
+            self.data.xfrc_applied[:] = 0.0
+            self._apply_grasp_forces()
+            self._advance_conveyor_items()
             mujoco.mj_step(self.model, self.data)
+            self._physics_steps_since_publish += 1
+            self._publish_frame_if_needed()
+            self._pace_arm_motion()
+
+    def _pace_arm_motion(self) -> None:
+        """Optional wall-time pacing so arm motion is easier to observe."""
+        if not self._arm_busy or self._arm_step_sleep_sec <= 0:
+            return
+        # Guard against accidental very large delays.
+        time.sleep(min(self._arm_step_sleep_sec, 0.02))
+
+    def _set_grasp(self, item_name: str) -> None:
+        """Attach an item to the end-effector using physics forces."""
+        pos = self.get_item_pos(item_name)
+        if pos is None:
+            self._grasped_item = None
+            return
+
+        self._grasped_item = item_name
+
+        # Calculate exact offset relative to hand to prevent teleportation
+        hand_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "hand")
+        hand_pos = self.data.xpos[hand_id]
+        hand_quat = self.data.xquat[hand_id]
+        
+        info = self.items[item_name]
+        item_quat = self.data.xquat[info.body_id]
+        
+        hand_mat = self.data.xmat[hand_id].reshape(3, 3)
+        self._grasp_offset_pos = hand_mat.T @ (pos - hand_pos)
+        
+        hand_quat_inv = np.zeros(4)
+        mujoco.mju_negQuat(hand_quat_inv, hand_quat)
+        self._grasp_offset_quat = np.zeros(4)
+        mujoco.mju_mulQuat(self._grasp_offset_quat, hand_quat_inv, item_quat)
+
+    def _clear_grasp(self) -> None:
+        """Release any active grasped item."""
+        self._grasped_item = None
+
+    def _apply_grasp_forces(self) -> None:
+        """Kinematically lock grasped item to end-effector."""
+        if self._grasped_item is None:
+            return
+        info = self.items.get(self._grasped_item)
+        if info is None or info.body_id < 0:
+            self._clear_grasp()
+            return
+
+        body_id = info.body_id
+        
+        # Use relative offset to avoid snapping
+        hand_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "hand")
+        hand_pos = self.data.xpos[hand_id].copy()
+        hand_quat = self.data.xquat[hand_id].copy()
+        hand_mat = self.data.xmat[hand_id].reshape(3, 3)
+        
+        if hasattr(self, "_grasp_offset_pos"):
+            target_pos = hand_pos + hand_mat @ self._grasp_offset_pos
+        else:
+            local_grip_offset = np.array([0.0, 0.0, 0.105])
+            target_pos = hand_pos + hand_mat @ local_grip_offset
+            
+        target_quat = np.zeros(4)
+        if hasattr(self, "_grasp_offset_quat"):
+            mujoco.mju_mulQuat(target_quat, hand_quat, self._grasp_offset_quat)
+            mujoco.mju_normalize4(target_quat)
+        else:
+            target_quat = hand_quat.copy()
+        
+        # Update the freejoint qpos/qvel for absolute kinematic locking
+        jnt_name = f"{self._grasped_item}_jnt"
+        jnt_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, jnt_name)
+        if jnt_id >= 0:
+            qadr = self.model.jnt_qposadr[jnt_id]
+            self.data.qpos[qadr:qadr+3] = target_pos
+            self.data.qpos[qadr+3:qadr+7] = target_quat
+            
+            # Map hand spatial cvel [angular, linear] to freejoint qvel [linear, angular]
+            dadr = self.model.jnt_dofadr[jnt_id]
+            hand_vel = self.data.cvel[hand_id].copy()
+            self.data.qvel[dadr:dadr+3] = hand_vel[3:6]
+            self.data.qvel[dadr+3:dadr+6] = hand_vel[0:3]
+            
+        # Zero out any forces just in case
+        self.data.xfrc_applied[body_id, :] = 0.0
+
+    def _advance_conveyor_items(self) -> None:
+        """
+        Respawn items as needed and apply force-based conveyor drive.
+        Conveyor forces are applied via _apply_conveyor_forces (velocity-tracking).
+        """
+        for name, info in self.items.items():
+            pos = self.get_item_pos(name)
+            if pos is None:
+                continue
+
+            if name == self._grasped_item or name == self._pick_target_item:
+                continue
+
+            if info.picked:
+                if info.respawn_at > 0 and self.data.time >= info.respawn_at:
+                    self._respawn_item_on_conveyor(name)
+                continue
+
+            if pos[0] > CONVEYOR_EXIT_X:
+                self._respawn_item_on_conveyor(name)
+
+        self._apply_conveyor_forces()
+
+    def _respawn_item_on_conveyor(self, item_name: str) -> None:
+        """Place an item back at its configured conveyor spawn slot."""
+        spawn = self._item_spawn_positions.get(item_name)
+        if spawn is None:
+            return
+        reset_pos = spawn.copy()
+        reset_pos[2] = CONVEYOR_ITEM_Z
+        self._set_item_pose(item_name, reset_pos)
+        # No velocity set; force-based conveyor will accelerate from rest
+        info = self.items[item_name]
+        info.picked = False
+        info.respawn_at = 0.0
+
+    def _emit_status(self, phase: str, **extra) -> None:
+        """Emit a lightweight operation event for live UI feedback."""
+        if self.status_callback is None:
+            return
+        event = {
+            "phase": phase,
+            "time": round(float(self.data.time), 3),
+            "arm_busy": self._arm_busy,
+        }
+        event.update(extra)
+        try:
+            self.status_callback(event)
+        except Exception:
+            # Status streaming should never break control logic.
+            pass
 
     # ─── High-level pick-place operations ────────────────────────────────
 
@@ -530,6 +811,34 @@ class SemSorterSimulation:
             self.data.qvel[dadr:dadr + 6] = 0.0
         mujoco.mj_forward(self.model, self.data)
 
+    def _blend_item_to_pose(self, item_name: str, target_pos: np.ndarray,
+                            steps: int = 24) -> None:
+        """
+        Smoothly blend an item's pose to a target position.
+
+        This keeps the deterministic kinematic carry approach, but avoids a
+        visible single-frame teleport when attaching/releasing the item.
+        """
+        start_pos = self.get_item_pos(item_name)
+        if start_pos is None:
+            self._set_item_pose(item_name, target_pos)
+            mujoco.mj_forward(self.model, self.data)
+            return
+
+        for i in range(max(1, steps)):
+            alpha = (i + 1) / max(1, steps)
+            t = alpha * alpha * (3 - 2 * alpha)  # smoothstep easing
+            interp = start_pos * (1.0 - t) + target_pos * t
+            self._set_item_pose(item_name, interp)
+            self.data.xfrc_applied[:] = 0.0
+            self._apply_grasp_forces()
+            mujoco.mj_step(self.model, self.data)
+            self._publish_frame_if_needed()
+            self._pace_arm_motion()
+
+        self._set_item_pose(item_name, target_pos)
+        mujoco.mj_forward(self.model, self.data)
+
     def pick_and_place(self, item_name: str, target_bin: BinType) -> bool:
         """
         Execute a full pick-and-place sequence:
@@ -547,14 +856,20 @@ class SemSorterSimulation:
             logger.warning(f"Item {item_name} not found or already picked")
             return False
 
-        # Freeze all other items in place before we move the arm
-        self._stabilize_unpicked_items(exclude=item_name)
+        if self._stabilize_unpicked_enabled:
+            self._stabilize_unpicked_items(exclude=item_name)
 
         self._arm_busy = True
+        self._pick_target_item = item_name
+        self._emit_status("pick_start", item=item_name, bin=target_bin.value)
+        success = False
+        returned_to_neutral = False
         try:
             item_pos = self.get_item_pos(item_name)
             if item_pos is None:
                 logger.warning(f"Cannot get position for {item_name}")
+                self._emit_status("failed", item=item_name, bin=target_bin.value,
+                                  message="item position unavailable")
                 return False
 
             # Sanity check: item must be within reachable workspace
@@ -563,95 +878,206 @@ class SemSorterSimulation:
                 logger.warning(
                     f"Item {item_name} at {item_pos} is outside reachable "
                     f"workspace — it may have been displaced by physics")
+                self._emit_status("failed", item=item_name, bin=target_bin.value,
+                                  message="item outside reachable workspace")
                 return False
 
             logger.info(f"Picking {item_name} at {item_pos} -> {target_bin.value}")
 
             # 1. Open gripper
+            self._emit_status("open_gripper", item=item_name, bin=target_bin.value)
             self.set_gripper(True)
-            self.step(50)
+            self.step(150)
 
             # 1.5 Move high to ensure we clear the scene
-            safe_high = np.array([0.0, 0.0, 0.65])
-            if not self.move_to_position(safe_high, move_steps=200, settle_steps=50):
+            safe_high = np.array([
+                float(np.clip(item_pos[0], -0.25, 0.25)),
+                float(np.clip(item_pos[1], -0.15, 0.15)),
+                0.62,
+            ])
+            self._emit_status("move_safe_high", item=item_name, bin=target_bin.value)
+            if not self.move_to_position(
+                safe_high,
+                move_steps=150,
+                settle_steps=50,
+                position_tolerance=0.15,
+            ):
+                self._emit_status("failed", item=item_name, bin=target_bin.value,
+                                  message="failed moving to safe-high pose")
                 return False
 
-            # Re-read item position after safe-high move (physics may shift items)
-            item_pos = self.get_item_pos(item_name)
-            if item_pos is None or item_pos[2] < 0.0 or item_pos[2] > 1.0:
+            grasp_pos = None
+            for attempt in range(1, self._pick_retries + 1):
+                # Re-read item position in case conveyor/contacts nudged it.
+                item_pos = self.get_item_pos(item_name)
+                if item_pos is None or item_pos[2] < 0.0 or item_pos[2] > 1.0:
+                    logger.warning(
+                        "Item %s moved to invalid position %s on attempt %d",
+                        item_name,
+                        item_pos,
+                        attempt,
+                    )
+                    continue
+
+                # 2. Move above item (approach from above)
+                approach_pos = item_pos.copy()
+                approach_pos[2] += 0.16
+                self._emit_status("move_above_item", item=item_name, bin=target_bin.value)
+                reached_approach = self.move_to_position(
+                    approach_pos,
+                    move_steps=180,
+                    settle_steps=50,
+                    position_tolerance=0.03,
+                )
+                if not reached_approach:
+                    logger.warning(
+                        "Failed approach for %s on attempt %d/%d",
+                        item_name,
+                        attempt,
+                        self._pick_retries,
+                    )
+                    self.step(20)
+                    continue
+
+                # 3. Move down to grasp
+                item_pos = self.get_item_pos(item_name)
+                if item_pos is None:
+                    self.step(20)
+                    continue
+                grasp_pos = item_pos.copy()
+                grasp_pos[2] += 0.105
+                self._emit_status("move_to_grasp", item=item_name, bin=target_bin.value)
+                reached_grasp = self.move_to_position(
+                    grasp_pos,
+                    move_steps=120,
+                    settle_steps=50,
+                    position_tolerance=0.025,
+                )
+                if reached_grasp:
+                    break
                 logger.warning(
-                    f"Item {item_name} moved to invalid position {item_pos} "
-                    f"during arm movement")
-                return False
+                    "Failed grasp reach for %s on attempt %d/%d",
+                    item_name,
+                    attempt,
+                    self._pick_retries,
+                )
+                self.step(25)
 
-            # 2. Move above item (approach from above)
-            approach_pos = item_pos.copy()
-            approach_pos[2] += 0.10
-            if not self.move_to_position(approach_pos):
-                logger.warning(f"Failed to reach approach position for {item_name}")
+            if grasp_pos is None:
+                self._emit_status("failed", item=item_name, bin=target_bin.value,
+                                  message="item moved out of valid workspace")
                 return False
-
-            # 3. Move down to grasp
-            grasp_pos = item_pos.copy()
-            grasp_pos[2] += 0.03
-            if not self.move_to_position(grasp_pos):
-                logger.warning(f"Failed to reach grasp position for {item_name}")
+            if not reached_grasp:
+                self._emit_status("failed", item=item_name, bin=target_bin.value,
+                                  message="failed to reach grasp position")
                 return False
 
             # 4. Close gripper
+            self._emit_status("close_gripper", item=item_name, bin=target_bin.value)
             self.set_gripper(False)
             self.step(120)  # allow gripper to close
 
             # Verify we are close enough to claim a grasp.
             ee_pos = self.get_ee_pos()
+            
+            # Check the actual FINGER CENTER instead of wrist
+            hand_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "hand")
+            hand_mat = self.data.xmat[hand_id].reshape(3, 3)
+            local_grip_offset = np.array([0.0, 0.0, 0.105])
+            finger_center = ee_pos + hand_mat @ local_grip_offset
+            
             item_now = self.get_item_pos(item_name)
-            if item_now is None or np.linalg.norm(ee_pos - item_now) > 0.12:
+            if item_now is None or np.linalg.norm(finger_center - item_now) > 0.08:
                 logger.warning(
                     f"Grasp verification failed for {item_name}: "
-                    f"ee={ee_pos}, item={item_now}")
+                    f"fingers={finger_center}, item={item_now}")
+                self._emit_status("failed", item=item_name, bin=target_bin.value,
+                                  message="grasp verification failed")
                 return False
 
-            # Kinematic carry of the item for deterministic phase testing.
-            carry_offset = np.array([0.0, 0.0, -0.06])
-            self._set_item_pose(item_name, ee_pos + carry_offset)
-            mujoco.mj_forward(self.model, self.data)
+            # Engage physics-based grasp (no teleports during carry).
+            self._emit_status("engage_grasp", item=item_name, bin=target_bin.value)
+            self._set_grasp(item_name)
+            self.step(30)
 
             # 5. Lift up while carrying.
             lift_pos = grasp_pos.copy()
             lift_pos[2] += 0.22
-            if not self.move_to_position(
-                lift_pos, carry_item=item_name, carry_offset=carry_offset):
+            self._emit_status("lift_item", item=item_name, bin=target_bin.value)
+            if not self.move_to_position(lift_pos, move_steps=150, settle_steps=40):
+                self._emit_status("failed", item=item_name, bin=target_bin.value,
+                                  message="failed while lifting item")
                 return False
 
             # 6. Move above target bin while carrying.
             bin_pos = BIN_POSITIONS[target_bin].copy()
-            if not self.move_to_position(
-                bin_pos, carry_item=item_name, carry_offset=carry_offset):
+            transit_pos = np.array([0.25, 0.0, 0.65])
+            self._emit_status("move_to_bin", item=item_name, bin=target_bin.value)
+            if not self.move_to_position(transit_pos, move_steps=160, settle_steps=40, position_tolerance=0.15):
+                self._emit_status("failed", item=item_name, bin=target_bin.value,
+                                  message="failed while moving to transit")
                 return False
 
-            # 7. Place and release.
-            drop_pos = bin_pos.copy()
-            drop_pos[2] -= 0.12
-            self._set_item_pose(item_name, drop_pos)
-            mujoco.mj_forward(self.model, self.data)
+            self._emit_status("move_to_bin", item=item_name, bin=target_bin.value)
+            if not self.move_to_position(bin_pos, move_steps=160, settle_steps=40, position_tolerance=0.15):
+                self._emit_status("failed", item=item_name, bin=target_bin.value,
+                                  message="failed while moving to bin")
+                return False
+
+            # 7. Lower closer to the bin while still carrying, then release.
+            lower_pos = bin_pos.copy()
+            # Drop from a safe height inside/above the bin without hitting the lip
+            lower_pos[2] = 0.45
+            self._emit_status("lower_to_bin", item=item_name, bin=target_bin.value)
+            if not self.move_to_position(lower_pos, move_steps=120, settle_steps=40, position_tolerance=0.10):
+                self._emit_status("failed", item=item_name, bin=target_bin.value,
+                                  message="failed while lowering into bin")
+                return False
+
+            self._emit_status("release_item", item=item_name, bin=target_bin.value)
+            self._clear_grasp()
+            # Exclude released item from conveyor drive while it settles in bin.
+            info.picked = True
             self.set_gripper(True)
-            self.step(100)
+            self.step(120)
 
             # Mark item as sorted only after successful place.
-            info.picked = True
+            info.respawn_at = self.data.time + HAZARD_RESPAWN_DELAY_SEC
             self._items_sorted += 1
 
-            # 8. Return to neutral.
-            neutral = np.array([0.0, 0.0, 0.6])
-            self.move_to_position(neutral)
+            # 8. Retreat upward instead of returning to neutral to avoid frame jump.
+            retreat_pos = lower_pos.copy()
+            retreat_pos[2] = 0.62
+            self._emit_status("retreat_from_bin", item=item_name, bin=target_bin.value)
+            self.move_to_position(retreat_pos, move_steps=120, settle_steps=40, position_tolerance=0.10)
+            
+            # We flag this as 'returned_to_neutral' so the finally block doesn't force a teleport
+            returned_to_neutral = True
 
             # Stabilize remaining items after arm movement
-            self._stabilize_unpicked_items()
+            if self._stabilize_unpicked_enabled:
+                self._stabilize_unpicked_items()
+            self._emit_status("pick_complete", item=item_name, bin=target_bin.value)
 
             logger.info(f"Successfully placed {item_name} in {target_bin.value}")
+            success = True
             return True
         finally:
+            self._clear_grasp()
+            self.data.xfrc_applied[:] = 0.0
+            self._pick_target_item = None
+            if not success and not returned_to_neutral:
+                try:
+                    # Smoothly retreat upward on failure
+                    self._emit_status("retreat_after_failure", item=item_name)
+                    current_ee = self.get_ee_pos()
+                    retreat_pos = current_ee.copy()
+                    retreat_pos[2] = 0.62
+                    self.move_to_position(retreat_pos, move_steps=120, settle_steps=40, position_tolerance=0.15)
+                except Exception:
+                    logger.exception("Failed to recover pose after pick failure")
             self._arm_busy = False
+            self._emit_status("arm_idle")
 
     # ─── State snapshot ──────────────────────────────────────────────────
 
@@ -691,6 +1117,34 @@ class SemSorterSimulation:
 
         self.renderer.update_scene(self.data, camera=cam_id)
         return self.renderer.render()
+
+    def _publish_frame_if_needed(self, force: bool = False) -> None:
+        """
+        Publish rendered frames to callback for live streaming.
+        Uses step-based throttling (every N physics steps) instead of wall-clock
+        to avoid large visual jumps from frame-skip mismatch.
+        """
+        if self.frame_callback is None:
+            return
+        if self._ik_in_progress:
+            return
+        steps_per_frame = (
+            self._steps_per_frame_busy if self._arm_busy else self._steps_per_frame_idle
+        )
+        if not force and self._physics_steps_since_publish < steps_per_frame:
+            return
+        try:
+            frame = self.render_frame(
+                width=self._stream_width,
+                height=self._stream_height,
+                camera="overview",
+            )
+            self.frame_callback(frame)
+            self._physics_steps_since_publish = 0
+        except Exception as e:
+            logger.error(f"Render frame error: {e}")
+            # Streaming should not break physics/control loop.
+            pass
 
     def save_frame(self, path: str, camera: str = "overview") -> None:
         """Render a frame and save as PNG."""
