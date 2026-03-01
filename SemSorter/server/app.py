@@ -140,14 +140,11 @@ async def _simulation_tick_loop() -> None:
 
 @app.on_event("startup")
 async def startup():
-    global _main_loop, _sim_tick_task, _frame_ready_event
+    global _main_loop, _frame_ready_event
     _main_loop = asyncio.get_running_loop()
     _frame_ready_event = asyncio.Event()
     bridge.set_frame_ready_event(_main_loop, _frame_ready_event)
-    logger.info("Pre-warming MuJoCo simulation…")
-    await bridge.run_in_sim_thread(bridge.get_simulation)
-    _sim_tick_task = asyncio.create_task(_simulation_tick_loop())
-    logger.info("Simulation ready")
+    logger.info("Server ready (Simulation will load lazily on first connect)")
 
 
 @app.on_event("shutdown")
@@ -229,9 +226,17 @@ async def api_tts(text: str):
 
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket):
+    global _sim_tick_task
     await ws.accept()
     _chat_clients.add(ws)
     logger.info("Chat client connected (%d total)", len(_chat_clients))
+    
+    # Lazily start simulation if this is the first client
+    if _sim_tick_task is None:
+        logger.info("First client connected; starting MuJoCo simulation...")
+        await bridge.run_in_sim_thread(bridge.get_simulation)
+        _sim_tick_task = asyncio.create_task(_simulation_tick_loop())
+        
     try:
         await ws.send_text(json.dumps({
             "type": "welcome",
@@ -313,9 +318,17 @@ async def ws_chat(ws: WebSocket):
 # ── WebSocket: live video stream ──────────────────────────────────────────────
 @app.websocket("/ws/video")
 async def ws_video(ws: WebSocket):
+    global _sim_tick_task
     await ws.accept()
     _video_clients.add(ws)
     logger.info("Video client connected")
+    
+    # Lazily start simulation if this is the first client
+    if _sim_tick_task is None:
+        logger.info("First client connected; starting MuJoCo simulation...")
+        await bridge.run_in_sim_thread(bridge.get_simulation)
+        _sim_tick_task = asyncio.create_task(_simulation_tick_loop())
+        
     try:
         while True:
             # Wait for new frame (event-driven; sends exactly when sim produces one)
