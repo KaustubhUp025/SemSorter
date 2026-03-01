@@ -160,7 +160,7 @@ def get_simulation():
     global _sim
     with _sim_lock:
         if _sim is None:
-            os.environ.setdefault("MUJOCO_GL", "egl")
+            os.environ.setdefault("MUJOCO_GL", "osmesa")
             from controller import SemSorterSimulation
             logger.info("Initialising MuJoCo simulation…")
             _sim = SemSorterSimulation()
@@ -417,7 +417,7 @@ def render_frame(camera: str = "overview"):
     """
     with _sim_lock:
         sim = get_simulation()
-        return sim.render_frame(camera=camera, width=960, height=540)
+        return sim.render_frame(camera=camera, width=sim._stream_width, height=sim._stream_height)
 
 
 def get_latest_frame_jpeg() -> Optional[bytes]:

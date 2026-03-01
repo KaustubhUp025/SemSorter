@@ -113,8 +113,8 @@ class SemSorterSimulation:
         self._stream_fps_busy = float(
             os.environ.get("SEMSORTER_STREAM_FPS_BUSY", "30.0")
         )
-        self._stream_width = int(os.environ.get("SEMSORTER_STREAM_WIDTH", "960"))
-        self._stream_height = int(os.environ.get("SEMSORTER_STREAM_HEIGHT", "540"))
+        self._stream_width = int(os.environ.get("SEMSORTER_STREAM_WIDTH", "480"))
+        self._stream_height = int(os.environ.get("SEMSORTER_STREAM_HEIGHT", "270"))
         self._freeze_conveyor_when_busy = (
             os.environ.get("SEMSORTER_FREEZE_CONVEYOR_WHEN_BUSY", "1").strip()
             in {"1", "true", "yes", "on"}
@@ -167,8 +167,8 @@ class SemSorterSimulation:
         spec.modelname = "semsorter"
 
         # Set offscreen framebuffer size for rendering (lowered to save RAM on Render Free Tier)
-        spec.visual.global_.offwidth = 960
-        spec.visual.global_.offheight = 540
+        spec.visual.global_.offwidth = self._stream_width
+        spec.visual.global_.offheight = self._stream_height
 
         # ─── Add additional lights ───────────────────────────────────────
         world = spec.worldbody
@@ -229,6 +229,9 @@ class SemSorterSimulation:
 
         # ─── Compile the model ──────────────────────────────────────────
         self.model = spec.compile()
+        # Further reduce runtime memory allocations by explicitly dropping large arrays
+        self.model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        self.model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_MIDPHASE
         self.data = mujoco.MjData(self.model)
 
         # Keep floor contacts in the environment collision group (not robot group).

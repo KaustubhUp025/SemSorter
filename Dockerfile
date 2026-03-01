@@ -10,6 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglx0 \
     libx11-6 \
     libopengl0 \
+    libosmesa6 \
+    libegl-mesa0 \
+    libgl1-mesa-dri \
     wget \
     git \
     && apt-get clean \
@@ -32,8 +35,8 @@ RUN git clone --depth 1 --filter=blob:none --sparse https://github.com/google-de
     && rm -rf .git
 
 # ── MuJoCo environment ────────────────────────────────────────────────────────
-ENV MUJOCO_GL=egl
-ENV PYOPENGL_PLATFORM=egl
+ENV MUJOCO_GL=osmesa
+ENV PYOPENGL_PLATFORM=osmesa
 
 # ── Expose port ───────────────────────────────────────────────────────────────
 EXPOSE 8000

@@ -9,7 +9,6 @@ numpy==1.26.4
 
 # MuJoCo (headless, EGL)
 mujoco==3.5.0
-PyOpenGL-accelerate==3.1.7
 
 # Google Gemini (legacy + new SDK — both used for compatibility)
 google-generativeai==0.8.3
