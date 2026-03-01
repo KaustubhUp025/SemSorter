@@ -61,7 +61,7 @@ _latest_frame_lock = threading.Lock()
 _frame_ready_event: Optional[asyncio.Event] = None  # Signaled when new frame available
 _frame_ready_loop: Optional[asyncio.AbstractEventLoop] = None
 _jpeg_quality = max(
-    30, min(95, int(os.environ.get("SEMSORTER_STREAM_JPEG_QUALITY", "80")))
+    30, min(95, int(os.environ.get("SEMSORTER_STREAM_JPEG_QUALITY", "60")))
 )
 
 

@@ -108,13 +108,13 @@ class SemSorterSimulation:
         self.frame_callback: Optional[Callable[[np.ndarray], None]] = None
         self.status_callback: Optional[Callable[[Dict], None]] = None
         self._stream_fps_idle = float(
-            os.environ.get("SEMSORTER_STREAM_FPS_IDLE", "5.0")
+            os.environ.get("SEMSORTER_STREAM_FPS_IDLE", "2.0")
         )
         self._stream_fps_busy = float(
-            os.environ.get("SEMSORTER_STREAM_FPS_BUSY", "30.0")
+            os.environ.get("SEMSORTER_STREAM_FPS_BUSY", "12.0")
         )
-        self._stream_width = int(os.environ.get("SEMSORTER_STREAM_WIDTH", "480"))
-        self._stream_height = int(os.environ.get("SEMSORTER_STREAM_HEIGHT", "270"))
+        self._stream_width = int(os.environ.get("SEMSORTER_STREAM_WIDTH", "640"))
+        self._stream_height = int(os.environ.get("SEMSORTER_STREAM_HEIGHT", "360"))
         self._freeze_conveyor_when_busy = (
             os.environ.get("SEMSORTER_FREEZE_CONVEYOR_WHEN_BUSY", "1").strip()
             in {"1", "true", "yes", "on"}
@@ -128,7 +128,7 @@ class SemSorterSimulation:
         # Demo pacing: extra wall-time delay per arm simulation step.
         # Set to 0 for max speed.
         self._arm_step_sleep_sec = float(
-            os.environ.get("SEMSORTER_ARM_STEP_SLEEP_SEC", "0.0015")
+            os.environ.get("SEMSORTER_ARM_STEP_SLEEP_SEC", "0.0")
         )
         self._pick_retries = max(
             1, int(os.environ.get("SEMSORTER_PICK_RETRIES", "3"))
