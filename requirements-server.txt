@@ -19,7 +19,6 @@ python-dotenv==1.0.1
 
 # Telephony and Streaming (Vision-Agents SDK transitive requirements)
 colorlog==6.10.1
-onnxruntime==1.23.2
 aiortc==1.14.0
 getstream==2.5.19
 ping3==5.1.5
