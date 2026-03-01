@@ -1106,7 +1106,7 @@ class SemSorterSimulation:
 
     # ─── Rendering ───────────────────────────────────────────────────────
 
-    def render_frame(self, width: int = 1280, height: int = 720,
+    def render_frame(self, width: int = 960, height: int = 540,
                      camera: str = "overview") -> np.ndarray:
         """Render a frame from the specified camera. Returns RGB array."""
         if self.renderer is None:
