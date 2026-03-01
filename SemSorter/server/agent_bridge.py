@@ -402,7 +402,7 @@ def render_frame(camera: str = "overview"):
     """
     with _sim_lock:
         sim = get_simulation()
-        return sim.render_frame(camera=camera)
+        return sim.render_frame(camera=camera, width=960, height=540)
 
 
 def get_latest_frame_jpeg() -> Optional[bytes]:
