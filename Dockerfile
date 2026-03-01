@@ -9,8 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglvnd0 \
     libglx0 \
     libx11-6 \
+    libopengl0 \
     wget \
     git \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Create working directory ──────────────────────────────────────────────────
