@@ -557,10 +557,6 @@ def _store_latest_frame(frame) -> None:
             _frame_ready_loop.call_soon_threadsafe(_frame_ready_event.set)
         except Exception:
             pass
-            
-    # Explicit garbage collection helps keep Render 512MB RAM flat
-    # during high-frequency JPEG encoding.
-    import gc; gc.collect()
 
 
 def _pick_place_sync(sim, item_name: str, target) -> bool:

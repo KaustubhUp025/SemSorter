@@ -91,7 +91,9 @@ class HazardDetectionProcessor:
 
     def _capture_from_simulation(self) -> Image.Image:
         """Render a frame directly from the MuJoCo simulation."""
-        frame = self.simulation.render_frame(camera="overview", width=960, height=540)
+        w = getattr(self.simulation, "_stream_width", 480)
+        h = getattr(self.simulation, "_stream_height", 270)
+        frame = self.simulation.render_frame(camera="overview", width=w, height=h)
         return Image.fromarray(frame)
 
     def _capture_from_obs(self) -> Image.Image:

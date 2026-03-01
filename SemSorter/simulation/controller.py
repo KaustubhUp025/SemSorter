@@ -1100,17 +1100,14 @@ class SemSorterSimulation:
     def render_frame(self, width: int = 960, height: int = 540,
                      camera: str = "overview") -> np.ndarray:
         """Render a frame from the specified camera. Returns RGB array."""
-        renderer = mujoco.Renderer(self.model, height, width)
+        if self.renderer is None:
+            self.renderer = mujoco.Renderer(self.model, height, width)
 
         cam_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_CAMERA, camera)
 
-        renderer.update_scene(self.data, camera=cam_id)
-        pixels = renderer.render()
-        
-        # Explicitly destroy the renderer to free OpenGL framebuffers
-        # saving ~100MB of RAM on the Render.com free tier.
-        renderer.close()
+        self.renderer.update_scene(self.data, camera=cam_id)
+        pixels = self.renderer.render()
         
         return pixels
 
