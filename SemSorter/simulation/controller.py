@@ -189,18 +189,6 @@ class SemSorterSimulation:
         cam_overview.quat = [0.92, 0.38, 0, 0]  # Look slightly down
         cam_overview.fovy = 50
 
-        cam_top = world.add_camera()
-        cam_top.name = "topdown"
-        cam_top.pos = [0, 0, 2.0]
-        cam_top.quat = [0.0, 0.0, 0.0, 1.0]  # Look straight down
-        cam_top.fovy = 60
-
-        cam_side = world.add_camera()
-        cam_side.name = "side"
-        cam_side.pos = [1.5, 0, 0.8]
-        cam_side.quat = [0.65, 0.27, 0.27, 0.65]  # Side view
-        cam_side.fovy = 45
-
         # ─── Add conveyors ──────────────────────────────────────────────
         self._add_conveyor(spec, "input", pos=[-0.35, 0.40, 0])
         self._add_conveyor(spec, "output", pos=[0.35, 0.40, 0])
@@ -1109,14 +1097,19 @@ class SemSorterSimulation:
     def render_frame(self, width: int = 960, height: int = 540,
                      camera: str = "overview") -> np.ndarray:
         """Render a frame from the specified camera. Returns RGB array."""
-        if self.renderer is None:
-            self.renderer = mujoco.Renderer(self.model, height, width)
+        renderer = mujoco.Renderer(self.model, height, width)
 
         cam_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_CAMERA, camera)
 
-        self.renderer.update_scene(self.data, camera=cam_id)
-        return self.renderer.render()
+        renderer.update_scene(self.data, camera=cam_id)
+        pixels = renderer.render()
+        
+        # Explicitly destroy the renderer to free OpenGL framebuffers
+        # saving ~100MB of RAM on the Render.com free tier.
+        renderer.close()
+        
+        return pixels
 
     def _publish_frame_if_needed(self, force: bool = False) -> None:
         """
