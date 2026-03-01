@@ -24,7 +24,10 @@ RUN pip install --no-cache-dir -r requirements-server.txt
 COPY . .
 
 # ── Download MuJoCo Menagerie (Panda arm) ─────────────────────────────────────
-RUN git clone --depth 1 https://github.com/google-deepmind/mujoco_menagerie.git
+RUN git clone --depth 1 --filter=blob:none --sparse https://github.com/google-deepmind/mujoco_menagerie.git \
+    && cd mujoco_menagerie \
+    && git sparse-checkout set franka_emika_panda \
+    && rm -rf .git
 
 # ── MuJoCo environment ────────────────────────────────────────────────────────
 ENV MUJOCO_GL=egl
